@@ -1,0 +1,1 @@
+1762eee docs(01): rewrite marker-pdf tech narrative to pymupdf

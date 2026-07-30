@@ -1,0 +1,558 @@
+# 模块 2：HTML 前端
+> 技术栈：原生 HTML / JavaScript (fetch) / ReadableStream / FormData
+
+---
+
+## 学习目标
+
+完成本模块后，你将能够：
+
+1. 用原生 **HTML** 标签搭建「垂直布局的聊天页面结构」（控件区 → 消息区 → 输入区），不依赖任何前端框架
+2. 理解 **DOM**（文档对象模型），用 JavaScript 获取元素、修改内容、追加节点
+3. 用浏览器原生的 **fetch API** 发起 AJAX 请求，掌握 Promise 与 async/await
+4. 用 **ReadableStream** 逐块读取流式响应，实现「逐字出现」的 AI 回答效果
+5. 用 **FormData** 实现文件（PDF）上传
+6. 理解为什么本项目用 `fetch` 而不用 XMLHttpRequest 或 Axios
+
+本模块的产出是 `frontend/` 目录下的两个文件：`index.html`（页面结构）与 `app.js`（逻辑）。它们调用 [模块 3](./03-LangGraph-Agent.md) 提供的 4 个 API 端点，并在 [模块 4](./04-TMT记忆系统.md) 中接入记忆展示。
+
+---
+
+## 技术概念
+
+**HTML**（HyperText Markup Language）是网页的结构描述语言。用标签（如 `<div>`、`<button>`、`<input>`）定义页面元素的类型与嵌套关系。浏览器读取 HTML 并将其解析为一棵 **DOM 树**，再渲染为可视页面。本项目只用 HTML 描述结构，不写 CSS（采用浏览器默认样式）。
+
+**DOM**（Document Object Model）是浏览器在内存中为 HTML 建立的对象树。JavaScript 通过 DOM API（如 `document.getElementById`、`element.appendChild`）读取或修改页面内容。这与 React「声明式状态驱动 UI」不同——原生 JavaScript 是**命令式**的：你直接告诉浏览器「在这个节点后面追加一段文字」，而不是声明「消息列表长这样，请帮我同步」。
+
+**AJAX**（Asynchronous JavaScript and XML）是浏览器在**不刷新整个页面**的前提下，异步向服务器请求或发送数据的技术模式。AJAX 不是某个具体工具，而是「异步获取数据」这一模式的统称。实现 AJAX 有三种方式：
+- **`fetch`**（浏览器原生 API，现代标准，本项目采用）
+- **XMLHttpRequest**（XHR，2005 年代的古老 API，现已过时）
+- **Axios**（第三方库，封装了拦截器等工程化能力，本项目不需要）
+
+**Promise / async-await** 是 JavaScript 处理异步操作的语法。`fetch()` 返回一个 Promise（代表「未来某个时刻会得到的响应」），用 `await` 可以像写同步代码一样等待它完成。本模块会大量使用 `async function` + `await`。
+
+> 更多技术概念见 [概念速查](./概念速查.md)。
+
+---
+
+## 模块结构
+
+```mermaid
+graph LR
+    subgraph FE["frontend/"]
+        HTML["index.html<br/>定义页面结构"] --> DOM[("DOM 树")]
+        APP["app.js<br/>交互逻辑"] -->|"操作渲染"| DOM
+    end
+    APP -->|"fetch 通信"| BE
+    subgraph BE["后端 API (:8000)"]
+        Endpoints["4 个端点<br/>ingest ; query ; documents ; consolidate"]
+    end
+    BE -.->|"流式 / JSON 响应"| APP
+    style FE fill:#e3f2fd,stroke:#1976d2
+    style BE fill:#fff3e0,stroke:#f57c00
+```
+
+上图说明数据流向：`index.html` 只定义结构，所有交互逻辑集中在 `app.js`；`app.js` 通过 `fetch` 调用后端的 4 个端点，把结果写回 DOM 树。
+
+## 前置要求
+
+- 已完成 [模块 3：LangGraph Agent 工作流](./03-LangGraph-Agent.md)，后端能在 `localhost:8000` 正常启动并响应 4 个 API 端点
+- 已安装任意现代浏览器（Chrome / Edge / Firefox）
+- 已安装 **VS Code**（或其他编辑器，VS Code 的 Live Server 插件可方便地本地预览）
+- 有基础的 JavaScript 语法知识（变量、函数、`async/await`）
+
+> **为什么前端排在模块 3 之后？** 本项目的推荐学习路径是「模块 1（文档工具）→ 模块 3（LangGraph 后端）→ 模块 2（HTML 前端）→ 模块 4（记忆系统）」。前端需要后端已经能响应 4 个 API 端点，否则页面上传/提问都没有数据可交互。因此请先完成后端。
+
+---
+
+## 项目结构
+
+本模块的工作目录是 `frontend/`，最终只有两个文件：
+
+```
+agentic-search/
+└── frontend/
+    ├── index.html   # 本模块创建：页面结构（垂直布局：控件区 + 消息区 + 输入区）
+    └── app.js       # 本模块创建：fetch 通信 + DOM 渲染 + 流式读取
+```
+
+无 `package.json`、无 `node_modules`、无构建配置文件。这就是「零构建」的全部含义。
+
+---
+
+## 步骤 0：启动后端并确认 API 可用
+
+前端的每一步交互都依赖后端，因此先把后端跑起来。
+
+```bash
+cd backend
+uv sync
+uv run uvicorn agentic_search.main:app --reload --port 8000
+```
+
+**验证**：浏览器打开 `http://localhost:8000/docs`，能看到 FastAPI 自动生成的接口文档，其中列出 `POST /api/query`、`POST /api/ingest`、`GET /api/documents`、`POST /api/consolidate` 四个端点。
+
+> **关于跨域（CORS）**：前端从本地文件或 `localhost:3000` 访问 `localhost:8000` 属于跨源请求。后端 `main.py` 已配置 `CORSMiddleware`（允许所有来源），因此前端无需额外处理。若看到控制台报 CORS 错误，请回 [模块 3](./03-LangGraph-Agent.md) 确认 `main.py` 中 CORS 中间件已挂载。
+
+---
+
+## 步骤 1：HTML 结构 —— `index.html`
+
+`index.html` 是浏览器的入口文件。它的唯一职责是**描述页面长什么样**（有哪些元素、如何嵌套），不包含任何逻辑。
+
+### 1.1 整体骨架
+
+```html
+<!-- 这是教学示例，展示结构，非完整可运行文件 -->
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <title>Agentic Search with Memory</title>
+</head>
+<body>
+  <!-- 顶部控件区：文档列表 + 上传 + 整合记忆按钮 -->
+  <div id="controls"></div>
+
+  <!-- 中部消息区：显示对话 -->
+  <div id="messages"></div>
+
+  <!-- 底部输入区：提问表单 -->
+  <form id="query-form"></form>
+
+  <script src="app.js"></script>
+</body>
+</html>
+
+逐行讲解：
+
+- `<!DOCTYPE html>`：告诉浏览器用 HTML5 标准解析，这一行是固定写法
+- `<html lang="zh">`：`lang` 属性声明页面语言为中文，辅助搜索引擎与屏幕阅读器
+- `<head>` 中的 `<meta charset="UTF-8">`：指定字符编码，避免中文乱码
+- `<body>` 内是页面的可见内容
+- `<script src="app.js">`：**放在 `<body>` 末尾**。这样浏览器先解析完所有 HTML 元素（DOM 树建好），再加载并执行 JavaScript。如果把 `<script>` 放在 `<head>` 里，`app.js` 执行时页面元素还不存在，`document.getElementById` 会拿到 `null`。这是原生 JavaScript 的一个常见陷阱
+
+### 1.2 控件区结构
+
+控件区承载三块功能：文档列表、PDF 上传、整合会话记忆按钮。
+
+```html
+<!-- 这是教学示例 -->
+<div id="controls">
+  <h2>文档列表</h2>
+  <div id="doc-list"><!-- JS 渲染：已上传的文档 --></div>
+
+  <hr>
+
+  <input type="file" id="file-input" accept=".pdf">
+  <button id="upload-btn">上传 PDF</button>
+
+  <hr>
+
+  <button id="consolidate-btn">整合会话记忆（L2）</button>
+</div>
+```
+
+关键属性说明：
+
+- `<input type="file" accept=".pdf">`：`type="file"` 让它变成文件选择控件；`accept=".pdf"` 限制只接受 PDF 文件
+- 每个**需要在 JS 中操作的元素都带 `id`**。`id` 是 DOM 树中元素的唯一标识，`document.getElementById("upload-btn")` 就能拿到这个按钮对象。这是原生 JS 获取元素的标准方式（对比 React 用 `ref`）
+
+### 1.3 聊天区结构
+
+聊天区分两部分：上方滚动显示消息，下方是输入框。
+
+```html
+<!-- 这是教学示例 -->
+<div id="messages"><!-- JS 渲染：所有对话气泡 --></div>
+<form id="query-form">
+  <input type="text" id="question" placeholder="问一个问题...">
+  <button type="submit">发送</button>
+</form>
+```
+
+为什么用 `<form>` 包裹输入框？因为 `<button type="submit">` 配合 `<form>` 能让用户**按回车提交**——浏览器会自动触发 `submit` 事件。如果用裸 `<input>` + `<button>`，则需要手动监听回车键，多写代码。这是「利用原生平台特性」的一个例子。
+
+### 验证
+
+把完整的 `index.html` 写好后，直接双击文件用浏览器打开（或用 VS Code Live Server）。应该看到三个区块（控件区 → 消息区 → 输入区）垂直堆叠，排布很朴素——这是正常的，本项目不写 CSS。
+
+---
+
+## 步骤 2：DOM 操作基础 —— 获取与修改元素
+
+`app.js` 的第一件事是把 HTML 里的元素「拿到手里」，这需要 DOM API。
+
+### 2.1 获取元素
+
+```javascript
+// 这是教学示例
+const uploadBtn = document.getElementById("upload-btn");
+const fileInput = document.getElementById("file-input");
+const messagesEl = document.getElementById("messages");
+```
+
+`document.getElementById(id)` 返回对应的 DOM 元素对象。拿到对象后就能读它的属性（如 `fileInput.files[0]`）、调它的方法（如 `messagesEl.appendChild(...)`）、或给它绑定事件。
+
+### 2.2 绑定事件
+
+点击「上传」按钮时希望执行某段代码，用 `addEventListener`：
+
+```javascript
+// 这是教学示例
+uploadBtn.addEventListener("click", uploadFile);
+```
+
+第二个参数 `uploadFile` 是一个函数引用（注意没有括号——传函数本身，不是传调用结果）。当用户点击按钮，浏览器会自动调用这个函数。对比 React 的 `onClick={handleClick}`——原生 JS 需要你显式地「把函数挂到元素上」。
+
+### 2.3 创建并追加节点
+
+要把一条新消息显示到聊天区，需要**创建新元素并挂到 DOM 树上**：
+
+```javascript
+// 这是教学示例
+function appendMessage(role, text) {
+  const div = document.createElement("div");   // 1. 创建一个 <div>
+  div.className = "message " + role;          // 2. 设置 class（用于区分用户/AI）
+  div.textContent = text;                     // 3. 设置显示文字
+  messagesEl.appendChild(div);                // 4. 挂到消息区末尾
+}
+```
+
+逐行讲解：
+- `document.createElement("div")` 在内存中创建一个新元素，但**此时它还不在页面上**
+- `appendChild` 把元素追加为 `#messages` 的子节点，这一步之后页面才会显示它
+
+这与 React 的「修改 state 数组，框架自动 diff 并更新 DOM」截然不同。原生 JS 是命令式的：你精确控制「在哪里创建、在哪里挂载」。
+
+> **流式追加的小技巧**：流式回答时，文字是一段段到达的。常见做法是先创建一个空的 AI 消息 `<div>`，拿到它的引用，然后用 `el.textContent += chunk` 把每一段文字累加上去——不必每次都创建新节点。这个技巧会在步骤 5 用到。
+
+---
+
+## 步骤 3：AJAX 与 fetch —— 通信的本质
+
+前端的核心工作是和后端通信。本项目用浏览器原生的 **`fetch` API**。
+
+### 3.1 一个最简单的 GET 请求
+
+以「获取文档列表」（`GET /api/documents`）为例：
+
+```javascript
+// 这是教学示例
+async function loadDocuments() {
+  const res = await fetch("http://localhost:8000/api/documents");
+  const docs = await res.json();   // 把响应体解析成 JS 数组/对象
+  console.log(docs);                // 例如 [{id: "abc", name: "paper.pdf"}, ...]
+}
+```
+
+逐行讲解：
+- `fetch(url)` 发起请求，返回一个 **Promise**（代表「未来的响应」）
+- `await` 等待这个 Promise 完成，拿到 `Response` 对象 `res`
+- `res.json()` 也是异步的（读取响应体并解析 JSON），所以也要 `await`
+
+注意一个关键区别：`fetch` 默认是 GET 方法。要发 POST 或上传文件，需要传入第二个参数（配置对象）。
+
+### 3.2 fetch vs XMLHttpRequest（XHR）
+
+XHR 是更古老的 AJAX 实现，写法繁琐：
+
+```javascript
+// XHR 写法（过时，仅作对比，本项目不用）
+const xhr = new XMLHttpRequest();
+xhr.open("GET", "http://localhost:8000/api/documents");
+xhr.onload = () => console.log(JSON.parse(xhr.responseText));
+xhr.send();
+```
+
+对比 `fetch` 用 async/await 两行搞定。`fetch` 是现代标准，**本项目只用 fetch**。
+
+### 3.3 渲染文档列表到 DOM
+
+拿到文档数组后，遍历它、为每个文档创建节点：
+
+```javascript
+// 这是教学示例
+function renderDocList(docs) {
+  docListEl.innerHTML = "";              // 清空旧列表
+  docs.forEach((doc) => {
+    const p = document.createElement("p");
+    p.textContent = doc.filename;
+    p.dataset.id = doc.doc_id;          // 用 data-* 属性存 doc_id，方便点击时取出
+    docListEl.appendChild(p);
+  });
+}
+```
+
+`element.dataset.id` 对应 HTML 的 `data-id` 属性，是「在 DOM 元素上存额外数据」的标准方式。提问时要从被点击的文档里取出 `doc_id` 传给后端。
+
+---
+
+## 步骤 4：文件上传 —— FormData + fetch
+
+上传 PDF 不能发 JSON，要用 `multipart/form-data` 格式。浏览器原生提供 **FormData** 对象来构造这种格式。
+
+### 4.1 构造 FormData
+
+```javascript
+// 这是教学示例
+const form = new FormData();
+form.append("file", fileInput.files[0]);   // fileInput 是 <input type="file">
+```
+
+讲解：
+- `fileInput.files` 是一个类数组，`[0]` 是用户选中的第一个文件（一个 `File` 对象）
+- `FormData.append(字段名, 值)` 往表单里加一个字段。后端 FastAPI 用 `UploadFile` 接收名为 `file` 的字段
+
+### 4.2 发起上传请求
+
+```javascript
+// 这是教学示例
+async function uploadFile() {
+  const file = fileInput.files[0];
+  if (!file) return alert("请先选择 PDF 文件");
+
+  const form = new FormData();
+  form.append("file", file);
+
+  const res = await fetch("http://localhost:8000/api/ingest", {
+    method: "POST",
+    body: form,                  // 注意：不要手动设 Content-Type
+  });
+  const data = await res.json(); // 后端返回 {doc_id, filename}
+  alert(`上传成功：${data.filename}`);
+  loadDocuments();               // 刷新文档列表
+}
+```
+
+关键点：**不要手动设置 `Content-Type: multipart/form-data`**。`fetch` 传 `FormData` 时会自动设这个头并加上正确的 `boundary`（分隔符）。如果你手动写死 `Content-Type`，会缺少 boundary，后端无法解析。这是上传文件的常见陷阱。
+
+### 验证
+
+1. 后端 `POST /api/ingest` 已可用
+2. 在页面选一个 PDF，点「上传 PDF」
+3. 浏览器 DevTools → Network 面板能看到一个 `multipart/form-data` 的 POST 请求
+4. 上传成功后弹出文件名，且文档列表刷新
+
+---
+
+## 步骤 5：流式提问 —— ReadableStream
+
+这是本模块最核心、也最有趣的部分。真实 AI 产品（如 ChatGPT）的回答是**逐字流式出现**的，而不是等几十秒一次性弹出。本项目后端 `POST /api/query` 返回的是 **SSE 流式文本**，前端用 `fetch` + `ReadableStream` 逐块读取。
+
+### 5.1 为什么 fetch 能流式，XHR/Axios 不行
+
+- **XHR / Axios**：基于「请求—完整响应」模型，必须等整个响应接收完才触发回调，**无法逐块读取**
+- **fetch**：`response.body` 是一个 `ReadableStream`，可以拿到一个 `reader`，**一边接收一边读**，这正是流式所需的
+
+这也是本项目坚持用 `fetch`（而不是 Axios）的关键技术原因。
+
+### 5.2 流式读取的核心循环
+
+```javascript
+// 这是教学示例
+async function askQuestion() {
+  const question = questionInput.value;
+  if (!question.trim()) return;
+
+  appendMessage("user", question);          // 先显示用户的问题
+  const aiEl = appendMessage("assistant", "");// 创建空的 AI 气泡，拿引用待填充
+
+  const res = await fetch("http://localhost:8000/api/query", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question: question, doc_id: currentDocId }),
+  });
+
+  const reader = res.body.getReader();       // 1. 拿到流的读取器
+  const decoder = new TextDecoder();          // 2. 字节 → 文字的解码器
+
+  while (true) {
+    const { done, value } = await reader.read();  // 3. 读一块
+    if (done) break;                              // 4. 流结束
+    aiEl.textContent += decoder.decode(value);     // 5. 解码并追加到 AI 气泡
+  }
+}
+```
+
+逐段讲解：
+- `JSON.stringify({...})`：提问接口接收 JSON，需要先序列化成字符串，并设 `Content-Type: application/json`
+- `res.body` 是 `ReadableStream`，`.getReader()` 返回一个读取器
+- `decoder.decode(value)`：网络传输的是**字节**，需要 `TextDecoder` 转成中文字符串
+- `while (true)` 循环不断 `await reader.read()`，每次返回 `{done, value}`：`done` 为 `true` 表示流结束，`value` 是这一块的字节
+- `aiEl.textContent += ...`：把每段文字**累加**到预先创建好的 AI 气泡上，实现「逐字出现」的效果。这里复用了步骤 2.3 的技巧
+
+> **MDN ReadableStream 文档**：https://developer.mozilla.org/zh-CN/docs/Web/API/ReadableStream
+
+### 5.3 为什么用 appendMessage 返回元素引用
+
+为了让流式循环能精确地把文字追加到「这一条 AI 回复」上，`appendMessage` 应返回刚创建的元素引用：
+
+```javascript
+// 这是教学示例
+function appendMessage(role, text) {
+  const div = document.createElement("div");
+  div.className = "message " + role;
+  div.textContent = text;
+  messagesEl.appendChild(div);
+  return div;                 // 返回引用，供流式循环追加内容
+}
+```
+
+这样 `askQuestion` 里 `const aiEl = appendMessage("assistant", "")` 就拿到了这条 AI 消息的节点，循环中 `aiEl.textContent += chunk` 只更新它，不影响其他消息。
+
+### 验证
+
+1. 确保后端 `POST /api/query` 已启动且返回流式响应
+2. 先上传一篇 PDF（步骤 4），点文档列表选中它
+3. 在输入框打字提问，回车或点发送
+4. 应该看到 AI 回答**逐字出现**，而非一次性弹出
+
+> **如果后端还没实现流式接口**：可先临时把 `askQuestion` 改成非流式（`await res.json()` 一次性取结果再显示），等 [模块 3](./03-LangGraph-Agent.md) 完成后切回流式。
+
+---
+
+## 步骤 6：整合会话记忆按钮 —— 手动触发 L2
+
+在 [模块 4（TMT 记忆系统）](./04-TMT记忆系统.md) 中，记忆分两层：L1（每轮对话后自动提取事实）和 L2（会话级摘要）。其中 **L2 整合在本项目中由前端按钮手动触发**，而非等待空闲超时。
+
+> **为什么手动触发？** TiMem 生产实现中，L2 由 `SessionMemoryScanner` 定期扫描，当会话**最后一次交互超过 10 分钟空闲**时才触发。但教学项目为了便于演示和测试，不等待 10 分钟，改为用户主动点击按钮即时触发。TiMem 的空闲超时原理仍作为背景概念在模块 4 讲解。
+
+### 6.1 按钮逻辑
+
+```javascript
+// 这是教学示例
+async function consolidateMemory() {
+  const res = await fetch("http://localhost:8000/api/consolidate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: currentSessionId }),
+  });
+  const data = await res.json();   // 后端返回 {status: "ok", l2_id: "..."}
+  if (data.status === "ok") {
+    alert("L2 记忆整合完成");
+  }
+}
+```
+
+讲解：这与一个普通的 POST 请求没有区别——重点在于**它触发的后端逻辑**（把该会话的 L1 事实整合成 L2 摘要）。按钮的存在让 L2 触发变得可见、可控，便于教学观察。
+
+### 6.2 绑定
+
+```javascript
+// 这是教学示例
+consolidateBtn.addEventListener("click", consolidateMemory);
+```
+
+### 验证
+
+1. 连续提问几轮（产生若干 L1 记忆）
+2. 点击「整合会话记忆（L2）」按钮
+3. 在 MongoDB Compass 的 `agentic_search.memories` 集合中应出现一条 L2 记录
+4. 再次提问「我之前问了什么」，Agent 应能基于 L2 记忆回答
+
+---
+
+## 步骤 7：组装完整逻辑 —— `app.js` 结构
+
+把以上函数组织成一个 `app.js`，整体结构大致如下（这是骨架，非完整可运行代码）：
+
+```javascript
+// 这是教学示例，展示组织方式
+const API = "http://localhost:8000";   // 后端地址，集中定义
+
+// --- 获取 DOM 元素 ---
+const fileInput   = document.getElementById("file-input");
+const uploadBtn   = document.getElementById("upload-btn");
+const consolidateBtn = document.getElementById("consolidate-btn");
+const queryForm   = document.getElementById("query-form");
+const questionInput  = document.getElementById("question");
+const messagesEl  = document.getElementById("messages");
+const docListEl   = document.getElementById("doc-list");
+
+let currentDocId = null;    // 当前选中文档
+
+// --- 核心函数 ---
+async function uploadFile() { /* 步骤 4 */ }
+async function askQuestion() { /* 步骤 5：流式 */ }
+async function loadDocuments() { /* 步骤 3：GET + 渲染 */ }
+async function consolidateMemory() { /* 步骤 6 */ }
+function appendMessage(role, text) { /* 步骤 2：返回元素引用 */ }
+
+// --- 绑定事件 ---
+uploadBtn.addEventListener("click", uploadFile);
+consolidateBtn.addEventListener("click", consolidateMemory);
+queryForm.addEventListener("submit", (e) => {
+  e.preventDefault();        // 阻止表单默认提交（刷新页面）
+  askQuestion();
+});
+
+// --- 初始化 ---
+loadDocuments();             // 页面打开时先加载文档列表
+```
+
+注意几点：
+- `API` 地址集中定义为一个常量，方便统一修改
+- 表单的 `submit` 事件里要 `e.preventDefault()`——否则浏览器会用默认方式提交表单（导致页面刷新），而我们想用 `fetch` 异步提交
+- 页面加载末尾调用 `loadDocuments()` 初始化文档列表，这对应 React 中 `useEffect` 的「挂载后获取数据」场景
+
+---
+
+## 完成检查
+
+在浏览器中打开 `frontend/index.html`（或用 `python -m http.server` 托管），依次操作：
+
+1. **上传 PDF**：点文件选择 → 选一个 PDF → 点「上传 PDF」→ 出现成功提示，文档列表刷新
+2. **查看文档列表**：文档列表区显示已上传文档（`GET /api/documents` 生效）
+3. **提问**：输入框打字 → 回车或点发送 → 你的问题出现在聊天区
+4. **流式回答**：AI 回复**逐字出现**，而非一次性弹出（`ReadableStream` 生效）
+5. **整合记忆**：连续提问几轮后，点「整合会话记忆（L2）」→ MongoDB Compass 中 `memories` 集合出现 L2 记录
+6. **错误处理**：关掉后端再提问 → 看到 fetch 报错提示（而非页面崩溃）
+
+全部通过，前端模块完成。
+
+---
+
+## 常见问题
+
+### Q：页面打开是空白 / 按钮点击无反应
+
+检查 `app.js` 中的 `document.getElementById` 是否拿到了 `null`。最常见原因是 `<script src="app.js">` 放在了 `<head>` 里——此时 DOM 还没建好。务必把 `<script>` 放在 `<body>` 末尾。
+
+### Q：跨域错误（CORS）
+
+前端（本地文件或 `localhost:3000`）访问 `localhost:8000` 会跨源。确认后端 `main.py` 已挂载 `CORSMiddleware`。开发阶段后端允许所有来源即可。
+
+### Q：流式提问不工作（一次性返回 / 卡住）
+
+确认三点：① 后端 `/api/query` 返回的是流式响应（`StreamingResponse`），而非普通 JSON；② 前端用 `res.body.getReader()` 逐块读，而非 `await res.json()` 一次性读；③ 没有 `await` 一个会等完整响应的封装（如 Axios）。
+
+### Q：上传文件后端报「缺少 boundary」
+
+原因是手动设置了 `Content-Type: multipart/form-data`。删除该设置，让 `fetch` 传 `FormData` 时自动生成 boundary。
+
+### Q：如何不用后端单独预览前端
+
+执行 `cd frontend && python -m http.server 3000`，然后访问 `http://localhost:3000`。这只是托管静态文件，真正的数据交互仍需后端在 `localhost:8000` 运行。
+
+---
+
+## 下一步
+
+前端完成。接下来学习记忆系统——理解 L1/L2 两层记忆如何让 Agent 跨会话记住你的研究方向：
+
+→ [模块 4：TMT 记忆系统](./04-TMT记忆系统.md)
+
+如果你想回顾整个项目的起点或查阅概念：
+
+→ [开始指南](./00-开始指南.md)
+
+---
+
+## 延伸阅读
+
+- **MDN fetch 文档**（请求/响应/流式的权威参考）：https://developer.mozilla.org/zh-CN/docs/Web/API/fetch
+- **MDN ReadableStream 文档**（流式读取原理）：https://developer.mozilla.org/zh-CN/docs/Web/API/ReadableStream
+- **MDN FormData 文档**（文件上传格式）：https://developer.mozilla.org/zh-CN/docs/Web/API/FormData
+- **MDN DOM 简介**（理解文档对象模型）：https://developer.mozilla.org/zh-CN/docs/Web/API/Document_Object_Model
+- **Using Fetch（流式读取示例）**：https://developer.mozilla.org/zh-CN/docs/Web/API/Fetch_API/Using_Fetch

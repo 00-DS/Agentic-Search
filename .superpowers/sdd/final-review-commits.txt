@@ -1,0 +1,13 @@
+8dae40f docs(04): db name agentic_search, core->configs
+5c8a626 docs(02): db name agentic_search
+b69696f docs(00): pymupdf deps, db name agentic_search
+e629c77 docs(项目概览): align Markdown terminology to 纯文本 for pymupdf output
+1bf2be3 docs(项目概览): pymupdf, core->configs, db name agentic_search
+3a75c8a docs(概念速查): pymupdf entry, core->configs, db name agentic_search
+8ae4255 docs(03): align Markdown terminology to 纯文本 for pymupdf output
+14ed841 docs(03): pymupdf wording, core->configs, db name agentic_search
+7be5133 docs(01): fix 5 residual marker-pdf/core references missed by brief
+14dd10d docs(01): uv init with name, rename core->configs, db name agentic_search
+be169b1 docs(01): fix stale sample pytest output (6 tests, drop removed test)
+15d17f4 docs(01): rewrite parse_pdf spec and tests for pymupdf
+1762eee docs(01): rewrite marker-pdf tech narrative to pymupdf

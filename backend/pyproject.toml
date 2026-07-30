@@ -1,0 +1,16 @@
+[project]
+name = "agentic-search"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "赵冠博", email = "ds1084851657@126.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic-settings>=2.14.2",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12.0"]
+build-backend = "uv_build"

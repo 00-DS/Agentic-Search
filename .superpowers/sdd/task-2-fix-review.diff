@@ -1,0 +1,19 @@
+diff --git a/任务文档/01-Python文档工具.md b/任务文档/01-Python文档工具.md
+index 074951a..773efd7 100644
+--- a/任务文档/01-Python文档工具.md
++++ b/任务文档/01-Python文档工具.md
+@@ -685,13 +685,12 @@ uv run pytest tests/test_documents.py -v
+ 
+ ```
+ tests/test_documents.py::test_parse_pdf_returns_string PASSED
+-tests/test_documents.py::test_parse_pdf_contains_markdown_structure PASSED
+ tests/test_documents.py::test_parse_pdf_file_not_found PASSED
+ tests/test_documents.py::test_store_and_read_document PASSED
+ tests/test_documents.py::test_list_documents_returns_list PASSED
+ tests/test_documents.py::test_list_documents_result_format PASSED
+ tests/test_documents.py::test_read_document_not_found PASSED
+-======================== 7 passed in 1.2s ========================
++======================== 6 passed in 1.2s ========================
+ ```
+ 
+ - [ ] 额外验证：以下命令返回非零数字（PDF 解析成功）：

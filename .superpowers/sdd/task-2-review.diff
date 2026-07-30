@@ -1,0 +1,172 @@
+diff --git a/任务文档/01-Python文档工具.md b/任务文档/01-Python文档工具.md
+index 8ec4682..074951a 100644
+--- a/任务文档/01-Python文档工具.md
++++ b/任务文档/01-Python文档工具.md
+@@ -344,86 +344,75 @@ from agentic_search.services.documents import parse_pdf, store_document, list_do
+ 
+ ```python
+ def parse_pdf(pdf_path: str | Path) -> str:
+-    """读取 PDF 文件，使用 marker-pdf 转换为结构化 Markdown 文本。"""
++    """读取 PDF 文件，使用 pymupdf 提取纯文本（图片等非文字内容丢弃）。"""
+ ```
+ 
+-输入：PDF 文件路径（如 `"paper.pdf"`，可放在 `backend/` 下任意位置）。输出：转换后的 Markdown 文本，保留标题、段落、表格等结构。
++输入：PDF 文件路径（如 `"paper.pdf"`，可放在 `backend/` 下任意位置）。输出：提取后的纯文本，页与页之间用空行拼接。
+ 
+-**marker-pdf 基础用法**（官方文档：https://github.com/VikParuchuri/marker）。其核心 API 是 `PdfConverter`：
++**pymupdf 基础用法**（官方文档：https://pymupdf.readthedocs.io/）。核心是「打开文档 → 逐页取文字」：
+ 
+ ```python
+-from marker.converters.pdf import PdfConverter
+-from marker.models import create_model_dict
++import pymupdf
+ 
+-# 1. 创建转换器（首次运行会自动下载模型权重）
+-converter = PdfConverter(artifact_dict=create_model_dict())
+-
+-# 2. 转换单个 PDF
+-rendered = converter("example.pdf")
+-
+-# 3. 获取 Markdown 文本
+-markdown_text = rendered.markdown
++doc = pymupdf.open("example.pdf")   # 打开文档
++parts = []
++for page in doc:                    # 逐页迭代
++    parts.append(page.get_text())   # get_text() 默认只返回文字
++text = "\n".join(parts)             # 页间空行拼接
+ ```
+ 
+-关键概念：`PdfConverter` 是核心转换器；`create_model_dict()` 加载版面检测与 OCR 模型（首次使用时自动下载）；`converter(path)` 返回渲染结果对象，其 `.markdown` 属性是转换后的文本。转换结果保留文档逻辑结构——标题用 `#` 标记、表格用 Markdown 表格语法、列表保持缩进。
++关键概念：`pymupdf.open(path)` 打开 PDF（返回 Document 对象）；`for page in doc` 遍历每一页；`page.get_text()` 提取该页**文字**（默认不输出图片、矢量图等非文字内容，"丢弃"天然成立）；`"\n".join(...)` 把各页文字用空行拼成一段连续文本。
+ 
+-**转换效果对比**。假设 PDF 中有：
++> 现代导入写 `import pymupdf`（pymupdf ≥1.23.8 的官方推荐别名）。旧代码里的 `import fitz` 仍可用，但官方文档统一用 `import pymupdf`，本项目也用这个。
++
++**转换效果**。假设 PDF 中有：
+ 
+ ```
+ 1 Introduction
+ Transformers have revolutionized NLP...
+ ```
+ 
+-转换后的 Markdown：
++pymupdf 提取后得到的是**纯文本**（无 `#` 标题标记、无 Markdown 表格重建）：
+ 
+-```markdown
+-# 1 Introduction
++```
++1 Introduction
+ 
+ Transformers have revolutionized NLP...
+ ```
+ 
+-标题层级、段落分隔、表格结构都被保留。这意味着 Agent 读到的是有逻辑结构的文档，而非一堆扁平文本——它能理解「第三节的方法」指的是哪个部分。
++文字内容原样保留，但文档的**逻辑结构标记**（标题层级、表格格式、公式）不复存在。对本项目而言这足够——全文交给 LLM 做语义理解，模型能从文字本身读出章节含义。
+ 
+-**你需要实现的逻辑**：检查文件是否存在 → 创建/复用 `PdfConverter` → 调用转换 → 返回 `.markdown`。以下是**教学示例，展示核心逻辑，非完整实现**：
++**你需要实现的逻辑**：检查文件是否存在 → 打开 PDF → 逐页提取文字 → 关闭文档 → 返回拼接结果。以下是**教学示例，展示核心逻辑，非完整实现**：
+ 
+ ```python
+ from pathlib import Path
+-from marker.converters.pdf import PdfConverter
+-from marker.models import create_model_dict
+-
+-
+-# 模块级缓存：converter 初始化开销大（加载模型权重），只建一次
+-_converter = None
+-
+-
+-def _get_converter() -> PdfConverter:
+-    global _converter
+-    if _converter is None:
+-        _converter = PdfConverter(artifact_dict=create_model_dict())
+-    return _converter
++import pymupdf
+ 
+ 
+ def parse_pdf(pdf_path: str | Path) -> str:
++    """读取 PDF 文件，使用 pymupdf 提取纯文本（图片等非文字内容丢弃）。"""
+     p = Path(pdf_path)
+     if not p.exists():
+-        raise FileNotFoundError(f"文件不存在: {pdf_path}")
+-    converter = _get_converter()
+-    rendered = converter(str(p))
+-    return rendered.markdown
++        raise FileNotFoundError(f"文件不存在：{pdf_path}")
++    doc = pymupdf.open(p)
++    parts = [page.get_text() for page in doc]
++    doc.close()
++    return "\n".join(parts)
+ ```
+ 
+ 讲解要点：
+ 
+-- **性能优化**：`PdfConverter` 的初始化开销较大（加载模型权重）。若每次调用都重新创建，会严重拖慢响应。这里用模块级缓存 `_converter`，使 converter 在进程内只初始化一次。这种「惰性初始化 + 缓存」是处理重量级资源的常见手法。
++- **无需缓存 converter**：marker-pdf 之类工具初始化要加载模型、开销大，需用模块级缓存；pymupdf 的 `open()` 是轻量操作，每次调用即可，无需缓存层。
+ - **错误处理**：路径不存在时抛出 `FileNotFoundError` 并附上具体路径，便于排查。调用方（[模块 3](./03-LangGraph-Agent.md) 的 API 层）可以捕获此异常并向用户返回友好提示。
++- **图片等非文字内容**：`get_text()` 默认不输出，无需额外处理即满足"只留文字"的要求。
+ 
+-**测试你的函数**：准备任意一个 PDF 文件（可用任何论文 PDF），放在 `backend/` 下，然后：
++**测试你的函数**：准备任意一个 PDF 文件，放在 `backend/` 下：
+ 
+ ```bash
+ uv run python -c "from agentic_search.services.documents import parse_pdf; print(parse_pdf('你的文件.pdf')[:200])"
+ ```
+ 
+-**验证**：输出 PDF 转换后的 Markdown 前 200 个字符，其中应包含 `#` 标题标记，而非报错。
++**验证**：输出 PDF 提取后的纯文本前 200 个字符，而非报错。注意输出是连续纯文本，不含 `#` 标题标记。
+ 
+ ### 3.2 `store_document(doc_id, filename, markdown)`
+ 
+@@ -452,7 +441,7 @@ def store_document(doc_id: str, filename: str, markdown: str) -> None:
+         {
+             "doc_id": doc_id,                       # 文档唯一标识（上传时生成）
+             "filename": filename,                   # 原始 PDF 文件名
+-            "markdown": markdown,                   # marker-pdf 转出的完整 Markdown 全文
++            "markdown": markdown,                   # pymupdf 提取的完整纯文本全文
+             "uploaded_at": datetime.now(timezone.utc),  # 上传时间
+         }
+     )
+@@ -551,7 +540,7 @@ with pytest.raises(FileNotFoundError):
+ 
+ #### 4.1 测试 `parse_pdf`
+ 
+-`parse_pdf` 是纯转换函数（输入文件路径、输出 Markdown 字符串），不依赖 MongoDB，测试最直接：
++`parse_pdf` 是纯提取函数（输入文件路径、输出纯文本字符串），不依赖 MongoDB，测试最直接：
+ 
+ ```python
+ from agentic_search.services.documents import parse_pdf
+@@ -565,12 +554,6 @@ def test_parse_pdf_returns_string():
+     assert len(result) > 0  # 不应为空
+ 
+ 
+-def test_parse_pdf_contains_markdown_structure():
+-    """转换结果应包含 Markdown 结构标记。"""
+-    result = parse_pdf("test_sample.pdf")
+-    assert "#" in result  # Markdown 标题以 # 开头
+-
+-
+ def test_parse_pdf_file_not_found():
+     """传入不存在的路径应抛出 FileNotFoundError。"""
+     with pytest.raises(FileNotFoundError):
+@@ -579,6 +562,8 @@ def test_parse_pdf_file_not_found():
+ 
+ > 你需要准备一个测试用 PDF（放在 `backend/` 目录下，命名为 `test_sample.pdf`）。可创建一个简单文本文档导出为 PDF，或使用任何已有论文 PDF。`parse_pdf` 不依赖 MongoDB，故可独立测试。
+ 
++注意：提取结果是纯文本，不再断言含 `#` 之类结构标记——pymupdf 输出不含这些。
++
+ #### 4.2 测试 `store_document`、`list_documents` 与 `read_document`
+ 
+ 这三个函数操作 MongoDB，测试前需确保 MongoDB 服务已启动（见[开始之前](./00-开始指南.md)）。测试思路：先用 `store_document` 写入一条记录，再用 `list_documents` / `read_document` 读回验证。以下是**教学示例**：
+@@ -644,9 +629,9 @@ uv run pytest tests/test_documents.py -v
+ uv run python -c "
+ from agentic_search.services.documents import parse_pdf, store_document, list_documents, read_document
+ 
+-# 1. 将一个 PDF 转换为 Markdown
++# 1. 将一个 PDF 提取为纯文本
+ markdown = parse_pdf('你的文件.pdf')
+-print(f'转换完成，Markdown 长度: {len(markdown)} 字符')
++print(f'提取完成，文本长度: {len(markdown)} 字符')
+ 
+ # 2. 存入 MongoDB documents 集合
+ doc_id = 'demo-paper'

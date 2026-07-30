@@ -1,0 +1,399 @@
+diff --git a/任务文档/概念速查.md b/任务文档/概念速查.md
+new file mode 100644
+index 0000000..0dd0208
+--- /dev/null
++++ b/任务文档/概念速查.md
+@@ -0,0 +1,393 @@
++# 概念速查
++
++英文术语按字母排列，中文术语列于文末。每个条目按「定义 → 为什么需要 → 本项目用法 → 理解示例 → 延伸阅读」五段式展开，便于初学者既知其然又知其所以然。遇到不理解的术语随时查阅；更详细的说明见各模块的「技术概念」段落。
++
++---
++
++## Agentic Search
++
++**定义**：由 Agent（智能体）在运行时自主决定下一步动作的文档处理模式。与传统 RAG 的固定管道（检索 → 拼接 → 生成）相对，Agent 把「读什么、怎么读、如何回答」交给 LLM 按问题特征实时判断。
++
++**为什么需要**：固定管道无法随问题调整策略。例如「这篇论文用了什么数据集」与「复现实验需要哪些依赖」所需的阅读深度截然不同；若一律「检索 top-K 切片 → 拼接」，关键信息可能在切片边界被割裂。Agent 模式让模型基于完整上下文做语义理解，避免信息损失。本项目进一步借助现代 LLM 的 128K+ 上下文窗口，把整篇论文（约 8K–12K tokens）直接放入，免去切片与检索步骤。
++
++**本项目用法**：Agent 工作流定义在 `backend/src/agentic_search/agents/graph.py`，由 LangGraph 编排。基础图结构为 `analyze_intent → read_and_answer`：前者用 LLM 分析问题意图，后者读取由 pymupdf 提取的纯文本全文并生成回答。加入记忆后扩展出 `retrieve_memory`（检索历史）与 `store_memory`（提取事实）两个节点。
++
++**理解示例**（教学示例）：传统 RAG 像流水线工人，按固定工序取料、组装、出厂，不论来料如何都走同一流程；Agentic Search 像有判断力的研究员，先看问题决定要不要通读全文、要不要翻阅笔记（记忆），再组织答案。
++
++**延伸阅读**：[LangGraph · Agentic Concepts](https://langgraph.com.cn/concepts/agentic_concepts/)
++
++---
++
++## AJAX
++
++**定义**：Asynchronous JavaScript and XML 的缩写，指浏览器在不刷新整个页面的前提下，异步向服务器请求数据或发送数据的技术模式的统称。它不是某个具体库，而是「异步获取数据、局部更新界面」这一思想的统称。
++
++**为什么需要**：早期的网页每次交互都要整页重载，用户每点一次按钮就白屏闪烁、重新加载全部资源，体验差且浪费带宽。AJAX 把「请求数据」与「渲染界面」解耦——只取需要的数据，再用 JS 局部更新 DOM，实现了流畅的交互体验。现代标准实现是浏览器原生 `fetch()` API，无需第三方库。
++
++**本项目用法**：前端 `frontend/app.js` 的全部网络交互都是 AJAX 模式。`uploadFile()` 上传 PDF、`askQuestion()` 提交问题并流式接收回答、`loadDocuments()` 拉取文档列表、`consolidateMemory()` 触发记忆整合——四者皆在不刷新页面的情况下与后端 `http://localhost:8000` 通信，并就地更新消息区与控件区。
++
++**理解示例**（教学示例）：传统整页刷新好比「改一个字就重新印刷整本书」；AJAX 好比「只取需要的那一页，用橡皮擦掉旧字、写上新字」。后者的最小实现就是一句 `fetch(url).then(r => r.json())`。
++
++**延伸阅读**：[MDN · AJAX](https://developer.mozilla.org/zh-CN/docs/Glossary/AJAX)
++
++---
++
++## DOM 操作
++
++**定义**：DOM（Document Object Model，文档对象模型）是浏览器把 HTML 解析后生成的树状结构，页面中每个标签都是树上的一个节点。DOM 操作指用 JavaScript 读取或修改这棵树，从而在不重载页面的情况下更新界面。
++
++**为什么需要**：HTML 一旦加载完成就是静态文本，无法自行变化。要让界面随用户交互动态更新（新增消息气泡、刷新文档列表），必须有一套机制让程序能「找到节点、改它的内容或结构」。DOM 正是浏览器暴露给 JavaScript 的这扇窗口。若不操作 DOM，网页就只能停留在初始 HTML 的静态形态。
++
++**本项目用法**：前端 `frontend/app.js` 大量使用 DOM 操作来渲染消息与列表。核心函数 `appendMessage(role, text)` 通过 `document.createElement()` 创建消息节点、设置 `textContent`，再用 `appendChild()` 插入 `#messages` 容器；`loadDocuments()` 则清空并重建控件区（`#doc-list`）的文档条目。流式回答时，每收到一个数据块就调用 DOM 操作把新文字追加到当前消息节点末尾，实现打字机效果。
++
++**理解示例**（教学示例）：
++```javascript
++// 教学示例：创建一个段落并插入页面
++const p = document.createElement('p');   // 创建节点
++p.textContent = '你好';                  // 设置文本
++document.querySelector('#messages').appendChild(p);  // 挂到树上
++```
++这四行就把「文字」从无到有地放进页面，全程无需刷新。
++
++**延伸阅读**：[MDN · DOM 概述](https://developer.mozilla.org/zh-CN/docs/Web/API/Document_Object_Model)
++
++---
++
++## FastAPI
++
++**定义**：基于 Python 类型注解的现代异步 Web 框架，用于把 Python 函数暴露为 HTTP API。加一个装饰器（如 `@router.post("/api/query")`），普通函数就变成可通过网络访问的接口；它还能依据类型注解自动生成 OpenAPI 交互文档与数据校验。
++
++**为什么需要**：若不用框架，开发者需要自己解析 HTTP 请求、匹配路由、序列化 JSON、处理并发，代码繁琐且易错。FastAPI 把这些通用工作封装掉，让开发者专注于业务逻辑。同时它原生支持异步（async/await），适合流式响应等 I/O 密集场景。本项目采用**分层布局**而非单文件：`main.py`（瘦入口，仅创建 app 与配置 CORS）、`api/routes.py`（路由层）、`api/schemas.py`（请求/响应模型）、`agents/graph.py`（业务逻辑）。各层职责单一，便于维护与测试。
++
++**本项目用法**：应用入口 `backend/src/agentic_search/main.py` 创建 `FastAPI()` 实例、挂载 `api/routes.py` 的路由、并通过 `CORSMiddleware` 放开跨域。`api/routes.py` 用装饰器声明四个端点：`POST /api/query`、`POST /api/ingest`、`GET /api/documents`、`POST /api/consolidate`，分别对应提问、上传、列文档、记忆整合。
++
++**理解示例**（教学示例）：
++```python
++# 教学示例：一个装饰器即一个 HTTP 接口
++from fastapi import APIRouter
++router = APIRouter()
++
++@router.get("/api/hello")
++async def hello():
++    return {"msg": "hi"}
++```
++访问 `http://localhost:8000/api/hello` 即返回 `{"msg": "hi"}`，无需手写任何 HTTP 解析代码。
++
++**延伸阅读**：[FastAPI 官方文档](https://fastapi.tiangolo.com/zh/)
++
++---
++
++## fetch API
++
++**定义**：浏览器内置的、用于发起 HTTP 请求并处理响应的标准接口。`fetch(url, options)` 返回一个 Promise，用 `await` 取得 `Response` 对象，再调用 `.json()` 或 `.text()` 解析响应体。
++
++**为什么需要**：在 fetch 之前，浏览器发请求主要靠 `XMLHttpRequest`（XHR），它是回调风格——嵌套一多就形成「回调地狱」，代码层层缩进、难以阅读与维护。fetch 用 Promise 把请求链式化，配合 `async/await` 几乎可以写成同步的样子，大幅提升可读性。此外它是浏览器原生 API，零依赖、零安装。
++
++**本项目用法**：前端 `frontend/app.js` 用 fetch 完成全部网络请求，调用后端的四个端点。`uploadFile()` 用 `FormData` 包装文件并以 `POST` 上传；`askQuestion()` 以 `POST` 提交问题并取回 `Response`，再用 `response.body.getReader()` 进入流式读取（见 ReadableStream 条目）；`loadDocuments()` 用 `GET` 拉列表；`consolidateMemory()` 用 `POST` 触发记忆整合。
++
++**理解示例**（教学示例）：
++```javascript
++// 教学示例：最简 GET
++const res = await fetch('http://localhost:8000/api/documents');
++const docs = await res.json();
++
++// 教学示例：最简 POST（JSON 请求体）
++const res = await fetch('http://localhost:8000/api/query', {
++  method: 'POST',
++  headers: { 'Content-Type': 'application/json' },
++  body: JSON.stringify({ question: '主要贡献是什么？', doc_id: 'abc' }),
++});
++```
++
++**延伸阅读**：[MDN · 使用 fetch](https://developer.mozilla.org/zh-CN/docs/Web/API/Fetch_API/Using_Fetch)
++
++---
++
++## HTML
++
++**定义**：HyperText Markup Language（超文本标记语言），网页的结构描述语言。它用成对的标签（`<div>`、`<p>`、`<input>`）定义页面元素，浏览器据此把文本渲染成可视页面并构建出 DOM 树。
++
++**为什么需要**：网页本质上是一份结构化文档。HTML 提供了一套统一的、浏览器都能理解的「结构词汇」，让开发者声明「这里是一段文字、那里是一个输入框、这一块是控件区」。没有 HTML，浏览器无从知道该如何展示内容。HTML 还天然语义化，便于无障碍工具与搜索引擎理解页面含义。
++
++**本项目用法**：前端只有 `frontend/index.html` 一个文件，用原生标签描述一个单一垂直布局的骨架结构：顶部控件区（`<div id="controls">` 含文档列表、文件上传按钮与记忆整合按钮）、中部消息区（`<div id="messages">`）、底部输入区（`<form id="query-form">` 含提问输入框与发送按钮），三者自上而下自然堆叠。无任何框架、无构建步骤、不引入 CSS，完全依赖浏览器默认样式。
++
++**理解示例**（教学示例）：
++```html
++<!-- 教学示例：用标签描述结构 -->
++<div id="controls">
++  <input type="file" id="file-input" accept=".pdf">
++  <button id="upload-btn">上传</button>
++</div>
++```
++浏览器读到这段就知道「这是顶部控件区，里面有一个文件选择器、一个按钮」，再配合下方的消息区与输入区构成单一垂直布局。
++
++**延伸阅读**：[MDN · HTML 基础](https://developer.mozilla.org/zh-CN/docs/Learn/Getting_started_with_the_web/HTML_basics)
++
++---
++
++## LangGraph
++
++**定义**：用有向图（directed graph）构建 Agent 工作流的框架。核心概念有四：StateGraph（图容器）、Node（处理步骤，每个节点是一个函数）、Edge（节点间的连接）、State（在节点间传递与累积的数据结构）。
++
++**为什么需要**：若用手写 `while` 循环编排 Agent，状态散落在各处变量里、分支逻辑藏在 `if` 中，流程难以一眼看清、调试也困难。LangGraph 把流程显式建模为图：节点是步骤、边是流向、状态是统一的数据载体，因此流程可视化、状态管理内建、条件分支原生支持。本项目刻意不使用 `@tool` 装饰器，而是在节点函数里直接调用普通 Python 函数，减少一层抽象。
++
++**本项目用法**：图定义于 `backend/src/agentic_search/agents/graph.py`。基础结构为 `__start__ → analyze_intent → read_and_answer → __end__`；加入记忆后扩展为 `__start__ → analyze_intent → retrieve_memory → read_and_answer → store_memory → __end__`。每个节点函数接收 State、读取其中字段、返回更新后的字段。
++
++**理解示例**（教学示例）：
++```python
++# 教学示例：三步声明一个图
++from langgraph.graph import StateGraph, START, END
++
++graph = StateGraph(MyState)
++graph.add_node("analyze_intent", analyze_fn)      # 加节点
++graph.add_node("read_and_answer", answer_fn)
++graph.add_edge(START, "analyze_intent")           # 连边
++graph.add_edge("analyze_intent", "read_and_answer")
++graph.add_edge("read_and_answer", END)
++app = graph.compile()                              # 编译成可运行对象
++```
++
++**延伸阅读**：[LangGraph 官方文档](https://langgraph.com.cn/)
++
++---
++
++## pymupdf
++
++**定义**：基于 MuPDF 内核的轻量 PDF 处理库，通过 `page.get_text()` 从 PDF 文本层直接提取纯文字。单一 wheel、无模型下载、无 GPU 依赖。
++
++**为什么需要**：本项目要把整篇论文全文交给 LLM 做语义理解，需要先把 PDF 转成可读文字。pymupdf 用最简的方式做到：即装即用、零额外依赖。它在每一页上调用 `get_text()`，文字层内容原样返回，图片等非文字内容默认不输出。
++
++> **关于"结构化"的取舍**：理论上，能保留标题层级（`#`）、表格、公式的结构化 Markdown（如 marker-pdf、MinerU）比纯文本更利于 LLM 理解。但这些工具需要加载深度学习模型，依赖链重。本项目为降低门槛，**刻意选择最简的纯文本提取**（pymupdf），足以演示「全文进 LLM 上下文」的核心思想。
++
++**本项目用法**：在 `backend/src/agentic_search/services/documents.py` 的 `parse_pdf()` 函数中调用 pymupdf。上传的 PDF 在内存中经 pymupdf 提取为纯文本后，连同 `doc_id`、`filename`、上传时间直接存入 MongoDB 的 `documents` 集合（`markdown` 字段保存全文），原 PDF 不落盘、不保留任何文件。Agent 的 `read_and_answer` 节点经 `read_document(doc_id)` 从 MongoDB 读取全文。
++
++**理解示例**（教学示例）：一份多页论文 PDF，pymupdf 逐页调用 `get_text()` 拿到文字，用空行拼接成一段连续文本——文字内容齐全，但不带 `## 3 Method` 之类的结构标记，也不含图表。
++
++**延伸阅读**：[pymupdf 官方文档](https://pymupdf.readthedocs.io/)
++
++---
++
++## MongoDB
++
++**定义**：一种文档型（document-oriented）NoSQL 数据库。数据以「文档」（document，结构类似 JSON 对象）为单位存储，相关文档归入同一个「集合」（collection，类似关系库的表），多个集合组成一个「数据库」（database）。
++
++**为什么需要**：本项目有两类数据需要持久化——L1/L2 记忆与论文 Markdown 全文。若用文件系统，PDF、Markdown、JSON 散落各目录、命名易混、并发读写易冲突；关系型数据库（如 SQLite）则要先建表、定义列、再写 SQL 映射，对「内容长度可变、结构灵活」的记忆与长文并不顺手。MongoDB 以灵活的文档结构存储，字段可增可减、无需建表迁移，且官方提供成熟的 Python 驱动（PyMongo）与可视化工具（Compass），适合教学项目的快速迭代。
++
++**本项目用法**：本地运行一个 MongoDB 实例（默认地址 `localhost:27017`），所有数据集中存于名为 `agentic_search` 的数据库。该库下有两个集合：`memories`（记忆，文档结构 `{ _id, level, content, timestamp, session_id }`）与 `documents`（论文 Markdown，文档结构 `{ _id, doc_id, filename, markdown, uploaded_at }`）。连接配置 `mongo_uri` 与 `mongo_db` 定义在 `configs/config.py`，后端通过 PyMongo 读写这两个集合，前端通过 API 间接操作。
++
++**理解示例**（教学示例）：文档结构像一张可随手加字段的「登记卡」——`documents` 集合里每张卡记录一篇论文（卡上有文件名、全文 Markdown、上传时间），`memories` 集合里每张卡记录一条记忆（卡上有级别 L1/L2、内容、时间、会话 ID）。集合就是把同类卡归档的抽屉，数据库就是存放所有抽屉的档案柜。
++
++**延伸阅读**：[MongoDB 官方文档（数据库与集合）](https://www.mongodb.com/zh-cn/docs/manual/core/databases-and-collections/)
++
++---
++
++## MongoDB Compass
++
++**定义**：MongoDB 官方提供的图形化客户端（GUI）。它以可视化界面连接到 MongoDB 实例，让用户无需手写查询语句即可浏览数据库、集合、文档的内容，也能执行增删改查与查看索引。
++
++**为什么需要**：本项目不再使用文件系统，所有数据都在 MongoDB 里。命令行查询记忆或文档需要手写 PyMongo 脚本，对初学者门槛高、也不直观。Compass 提供「点开数据库 → 点开集合 → 看到一条条文档」的树状浏览体验，相当于「数据库版的文件管理器」，便于在教学调试时直观确认「记忆是否写进去了」「上传的 Markdown 全文是否完整」。
++
++**本项目用法**：学生本地安装 Compass 后，连接到 `mongodb://localhost:27017`，即可在左侧目录树中看到 `agentic_search` 数据库，展开后看到 `memories` 与 `documents` 两个集合，点击任一集合即可逐条查看文档。例如上传一篇 PDF 后，可在 `documents` 集合里看到对应的 `{ doc_id, filename, markdown, uploaded_at }` 文档；对话并整合记忆后，可在 `memories` 集合里看到 L1/L2 文档。它是验证「数据确实落库」的首选工具。
++
++**理解示例**（教学示例）：PyMongo 是「用代码与数据库对话」，Compass 是「用眼睛看数据库里有什么」——前者面向程序、后者面向人，二者互补，调试时先用 Compass 看现象、再用 PyMongo 改逻辑。
++
++**延伸阅读**：[MongoDB Compass 官方文档](https://www.mongodb.com/zh-cn/docs/compass/current/)
++
++---
++
++## Pydantic
++
++**定义**：Python 的数据验证与序列化库，FastAPI 的内置依赖。开发者用继承 `BaseModel` 的类声明数据结构（如请求体、响应体），Pydantic 自动完成类型校验、错误提示与 JSON ↔ Python 对象的互转。
++
++**为什么需要**：HTTP 传来的数据本质是无类型的字符串/JSON，若全靠手工解析与 `if` 校验，代码冗长且极易遗漏边界情况（空值、类型错、字段缺失）。Pydantic 把「数据长什么样」声明成类，校验逻辑由库自动生成：传错类型它直接报清晰的错误信息，字段对不上请求就被拒，从而把数据正确性从运行时随机崩溃提前到入口处统一拦截。
++
++**本项目用法**：`backend/src/agentic_search/api/schemas.py` 用 Pydantic 模型定义四个端点的请求与响应格式。例如 `/api/query` 的请求体声明为含 `question`、`doc_id` 字段的模型；FastAPI 据此自动校验前端提交的 JSON，字段缺失或类型不符时直接返回 422 错误，路由函数内无需再写校验代码。
++
++**理解示例**（教学示例）：
++```python
++# 教学示例：声明即校验
++from pydantic import BaseModel
++
++class Query(BaseModel):
++    question: str
++    doc_id: str
++
++q = Query(**{"question": "贡献是什么？", "doc_id": "abc"})  # 通过
++q = Query(**{"question": "贡献是什么？"})                   # 自动报错：缺 doc_id
++```
++
++**延伸阅读**：[Pydantic 官方文档](https://pydantic.com.cn/)
++
++---
++
++## PyMongo
++
++**定义**：MongoDB 官方维护的 Python 驱动（driver）库。它把「连接数据库、插入文档、查询、更新、删除」等操作封装成 Python 方法，让后端代码以 Python 对象的方式操作 MongoDB，而无需手写底层网络协议或查询字符串。
++
++**为什么需要**：MongoDB 本身只是「存数据的进程」，应用程序要通过网络与它通信，就必须有一套符合 MongoDB 通信协议（Wire Protocol）的客户端。自己实现这套协议既复杂又无意义；PyMongo 把协议细节全部封装，开发者只需 `db.collection.insert_one({...})` 这样直观的方法调用即可完成读写。本项目选择**同步驱动**（而非异步的 Motor）：教学项目数据量小，阻塞事件循环的开销可接受，而 PyMongo 同步 API 更简单直观、文档最丰富，利于初学者上手。
++
++**本项目用法**：后端 `memory/store.py` 与 `services/documents.py` 通过 PyMongo 操作 MongoDB。连接初始化在模块加载时完成（`MongoClient(mongo_uri)` 取得客户端，再按 `mongo_db` 取得数据库对象），随后各函数对 `memories`、`documents` 集合做增删改查。例如 `save_memory()` 用 `insert_one()` 写入一条记忆，`load_memories()` 用 `find()` 按条件查询，`read_document()` 用 `find_one()` 按 `doc_id` 取回单篇 Markdown 全文。
++
++**理解示例**（教学示例）：
++```python
++# 教学示例：插入一条与查询多条
++from pymongo import MongoClient
++
++client = MongoClient("mongodb://localhost:27017")
++db = client["agentic_search"]
++
++db.memories.insert_one({"level": "L1", "content": "用户关注实验复现", "session_id": "s1"})  # 插入一条
++for m in db.memories.find({"level": "L1"}):   # 按条件查询
++    print(m["content"])
++```
++`insert_one()` 返回插入结果（含自动生成的 `_id`），`find()` 返回一个可迭代的游标（cursor），遍历即可逐条取得文档。
++
++**延伸阅读**：[PyMongo 官方教程](https://www.mongodb.com/zh-cn/docs/languages/python/pymongo-driver/current/)
++
++---
++
++## pytest
++
++**定义**：Python 主流测试框架。约定用 `test_` 前缀命名测试函数（框架据此自动发现），用 `assert` 语句断言结果，无需手写测试运行器。
++
++**为什么需要**：代码改一处可能悄悄破坏别处。若每次都靠人肉点一遍功能，既慢又不可靠。pytest 让「验证行为是否符合预期」变成可重复执行的自动化脚本：跑一遍命令，立刻知道哪里坏了。`assert` 比 unittest 的 `self.assertEqual` 更接近自然语言，写起来更轻。
++
++**本项目用法**：测试位于 `backend/tests/`，含 `test_documents.py`（验证 `parse_pdf`、`list_documents`、`read_document` 的行为）、`test_graph.py`（验证图节点的输入输出）、`test_memory.py`（验证 L1/L2 记忆的写入与读取）。运行命令为 `uv run pytest tests/ -v`。
++
++**理解示例**（教学示例）：
++```python
++# 教学示例：一个最小测试
++def test_read_document_returns_markdown():
++    md = read_document("sample")   # 传入 doc_id，从 MongoDB 读取全文
++    assert "# " in md          # 至少包含一个一级标题
++    assert len(md) > 0
++```
++函数名以 `test_` 开头，pytest 自动发现并执行；`assert` 失败即报告该测试不通过。
++
++**延伸阅读**：[pytest 官方文档](https://pytest.cn/)
++
++---
++
++## ReadableStream
++
++**定义**：浏览器原生的流式数据读取接口，代表一个可分块（chunk）逐步读取的数据源，而非一次性返回全部内容的整体。
++
++**为什么需要**：对一份大响应（如 LLM 逐字生成的长回答），若等全部生成完再一次性返回，用户要盯着空白屏幕干等数秒。流式接口允许「生产一点、消费一点」：服务端边生成边推、客户端边收边显示，从而实现打字机式的实时输出。ReadableStream 就是客户端逐块取出这些数据的把手。
++
++**本项目用法**：前端 `frontend/app.js` 的 `askQuestion()` 处理 `/api/query` 的 SSE 流式响应——`response.body` 是一个 ReadableStream，用 `getReader()` 取得读取器，循环 `await reader.read()` 逐块取出字节，配合 `TextDecoder` 解码后立即用 DOM 操作渲染到当前消息气泡，无需等待整段回答生成完毕。
++
++**理解示例**（教学示例）：
++```javascript
++// 教学示例：逐块读取流
++const reader = response.body.getReader();
++const decoder = new TextDecoder();
++while (true) {
++  const { done, value } = await reader.read();   // 取一块
++  if (done) break;                               // 流结束
++  console.log(decoder.decode(value));            // 解码并显示这一块
++}
++```
++每一次 `read()` 返回的 `value` 可能是几个字、也可能是一段话，循环处理即可拼出完整回答。
++
++**延伸阅读**：[MDN · ReadableStream](https://developer.mozilla.org/zh-CN/docs/Web/API/ReadableStream)
++
++---
++
++## SSE（Server-Sent Events）
++
++**定义**：Server-Sent Events，服务器向浏览器单向推送数据的技术。底层仍是 HTTP，但连接建立后服务器可持续推送多个数据块，而非「一问一答」后立即关闭。
++
++**为什么需要**：普通 HTTP 是「请求 → 单次响应 → 关闭」模型，服务器无法主动把后续数据推给浏览器。而 LLM 的回答是逐 token 生成的，若用普通 HTTP，要么等全部生成完再返回（用户长时间等待），要么反复轮询（浪费请求）。SSE 在一条连接上持续推送数据块，既实时又只占一个连接，完美契合流式生成场景。
++
++**本项目用法**：`/api/query` 端点用 FastAPI 的 `StreamingResponse` 实现服务端推送——LangGraph 图的 `read_and_answer` 节点把 LLM 生成的 token 逐块 yield 出去，FastAPI 经由同一条 HTTP 连接持续写向客户端。前端则用 ReadableStream 逐块接收。注意本项目以「`StreamingResponse` + 分块写」的方式实现流式，原理与标准 SSE 一致。
++
++**理解示例**（教学示例）：普通 HTTP 像写信——寄出一封信、收到一封回信、结束。SSE 像开了一路电话——拨通后对方可以源源不断地讲，你边听边记，直到挂断。
++
++**延伸阅读**：[MDN · Server-Sent Events](https://developer.mozilla.org/zh-CN/docs/Web/API/Server-sent_events)
++
++---
++
++## TMT（Temporal Memory Tree）
++
++**定义**：TiMem 论文（ACL 2026 Findings）提出的时序分层记忆模型（Temporal Memory Tree）。它把记忆组织成五级层级：L1 原始事实 → L2 会话摘要 → L3 日模式 → L4 周趋势 → L5 稳定人设，越往上越抽象、时间跨度越大。
++
++**为什么需要**：若记忆只有一层，所有事实无差别堆叠，短期琐碎与长期人设混在一起——既会让记忆库膨胀、检索变慢，又无法区分「这一会儿关心什么」与「这个人长期是谁」。分层让信息在不同时间尺度上各自归档：L1 记录当下原子事实，L2 总结一次会话，更高层逐渐提炼出稳定的偏好与人设，从而兼顾「记得准」与「记得久」。
++
++**本项目用法**：`backend/src/agentic_search/memory/store.py` 实现 L1 与 L2 两级，数据存于 MongoDB 的 `memories` 集合（通过 PyMongo 读写）。L1 在每轮对话后由 LLM 自动提取原子事实并写入；**L2 由前端手动点击「整合会话记忆」按钮触发**（`POST /api/consolidate`），由 LLM 把本会话的 L1 整合为一条会话摘要（幂等：同一会话最多一个 L2，已有则增量更新）。论文中 L3–L5 在本教学项目不实现，仅作为阅读概念讲解。
++
++**L2 触发机制说明**：TiMem 生产实现中（源码 `services/session_memory_scanner.py`），L2 由 `SessionMemoryScanner` 定期扫描，当某会话最后一次交互超过配置超时（默认 `interaction_timeout_minutes=10`，即 10 分钟无交互）时视为会话结束并触发 L2 生成。教学项目为便于测试与演示，不等待 10 分钟空闲，改为前端手动按钮即时触发；空闲超时原理仍作为背景概念讲解。
++
++**理解示例**（教学示例）：TMT 像一套递进的笔记系统——L1 是「便签」随手记下每句话的要点，L2 是「当日总结」把便签归并成一条摘要，往上的层级则像「本周回顾」「个人画像」，从碎片逐步沉淀出稳定的认知。
++
++**延伸阅读**：[TiMem（GitHub，ACL 2026 Findings）](https://github.com/TiMEM-AI/TiMEM)
++
++---
++
++## uv
++
++**定义**：Astral 公司用 Rust 编写的 Python 包管理器，一站式替代 `pip` + `venv` + `virtualenv` 等工具的组合，速度比传统方案快 10–100 倍。
++
++**为什么需要**：传统 Python 工具链割裂——`pip` 管安装、`venv` 管虚拟环境、`pip-tools` 管锁文件，命令分散且慢。uv 把「建虚拟环境、装依赖、锁版本、运行命令」统一为单一工具，既快又少出错。它读取标准的 `pyproject.toml`，与现代 Python 打包规范兼容。
++
++**本项目用法**：后端依赖与运行由 uv 接管。进入 `backend/` 后，`uv sync` 依据 `pyproject.toml` 创建环境并安装全部依赖；`uv run uvicorn ...` 在该环境中启动服务；`uv run pytest ...` 在该环境中跑测试。核心命令：`uv sync`（装依赖）、`uv add <包>`（加依赖并写入配置）、`uv run <命令>`（在项目环境中执行）。
++
++**理解示例**（教学示例）：
++```bash
++# 教学示例：uv 三连
++uv sync                                  # 按 pyproject.toml 装好整个环境
++uv add fastapi                           # 加一个依赖
++uv run uvicorn agentic_search.main:app   # 在装好的环境里启动服务
++```
++全程无需手动 `python -m venv` 或 `pip install`。
++
++**延伸阅读**：[uv 官方文档](https://uv.oaix.tech/)
++
++---
++
++## uvicorn
++
++**定义**：基于 uvloop 与 httptools 的 Python ASGI 服务器，用于运行 FastAPI、Starlette 等异步 Web 应用。
++
++**为什么需要**：FastAPI 本身只「定义」应用——它规定请求如何路由、如何校验、如何返回，但它不会自己监听网络端口。要真正对外提供服务，需要一个「服务器」进程：绑定端口、接收 TCP/HTTP 连接、把请求转交给应用、再把响应写回客户端。uvicorn 扮演的就是这个角色。ASGI（Asynchronous Server Gateway Interface）是异步网关标准，使其能支撑流式响应、WebSocket 等长连接场景。
++
++**本项目用法**：项目启动命令为 `cd backend && uv run uvicorn agentic_search.main:app --reload --port 8000`。其中 `agentic_search.main:app` 指「`agentic_search` 包 `main` 模块里的 `app` 变量」（即 FastAPI 实例）；`--reload` 开启文件改动自动重启，便于开发；`--port 8000` 指定监听端口。前端 `app.js` 即向 `http://localhost:8000` 发请求。
++
++**理解示例**（教学示例）：FastAPI 与 uvicorn 的关系，好比「菜谱」与「灶台」——FastAPI 写明了每道菜（每个端点）怎么做，但没有灶台就做不出来；uvicorn 是真正开火、接单、出菜的那台灶台。启动命令就是「把这本菜谱放到这台灶台上」。
++
++**延伸阅读**：[uvicorn 官方网站](https://www.uvicorn.org/)
++
++---
++
++## 包化布局（src layout）
++
++**定义**：Python 项目的标准目录约定——把源代码放在 `src/<包名>/` 下，并在 `pyproject.toml` 中声明包名。安装后，代码以「包」而非「当前目录脚本」的形式被导入。
++
++**为什么需要**：在平铺布局（源码直接堆在项目根）中，运行测试或脚本时常会「误导入到当前工作目录的源码」而非已安装的包，导致「本地能跑、装到别处就崩」的诡异问题。src layout 让源码只有在被 `pip install -e .` 安装之后才能被 import，强制测试与运行走同一条导入路径，从源头消除这种偏差。它也使项目天然具备「可作为一个包分发」的结构。
++
++**本项目用法**：包名为 `agentic_search`，源码位于 `backend/src/agentic_search/`（其下含 `main.py`、`configs/`、`api/`、`agents/`、`memory/`、`services/`）。执行 `uv sync`（或 `pip install -e .`）后，即可在任意位置用 `from agentic_search.agents.graph import ...` 形式导入，启动命令里的 `agentic_search.main:app` 也正是以此包路径定位应用。
++
++**理解示例**（教学示例）：平铺布局像把零件直接摊在桌上，随手拿容易拿错；src layout 像先把零件装进贴了标签的盒子（包），用时「按盒名取」，绝不会和桌上的散件混淆。
++
++**延伸阅读**：[Python 打包指南 · src layout vs flat layout](https://packaging.python.org/en/latest/discussions/src-layout-vs-flat-layout/)
++
++---
++
++## 数据存储
++
++**定义**：本项目数据的持久化方案——所有运行时数据（L1/L2 记忆、论文 Markdown 全文）统一存入一个本地 MongoDB 数据库，不再依赖任何文件系统目录。
++
++**为什么需要**：上传的 PDF、转换出的 Markdown、积累的记忆都需要持久化，否则进程一停数据就丢。早期的方案是把它们散落到 `data/raw/`、`data/docs/`、`data/memories.json` 等文件与目录里，但这样存在命名混乱、并发读写冲突、路径约定易错等问题。改用 MongoDB 后，数据集中在一个数据库、按集合归类，由数据库统一管理读写与一致性，应用代码不再操心「存到哪个目录」「文件叫什么名」，存储层彻底收敛。
++
++**本项目用法**：数据库名为 `agentic_search`（地址 `localhost:27017`，配置项 `mongo_uri` / `mongo_db` 在 `configs/config.py`），其下两个集合各司其职——`memories` 集合存放 TMT 记忆数据（L1/L2，文档结构 `{ _id, level, content, timestamp, session_id }`）；`documents` 集合存放 pymupdf 提取的完整纯文本全文（文档结构 `{ _id, doc_id, filename, markdown, uploaded_at }`）。上传流程把 PDF 经 pymupdf 提取为纯文本后直接写入 `documents` 集合（原 PDF 不落盘）；Agent 回答时从 `documents` 按 `doc_id` 读取全文；记忆则随时读写 `memories` 集合。原 `backend/data/` 目录已整体删除，项目零文件系统依赖。
++
++**理解示例**（教学示例）：
++```
++MongoDB: agentic_search（localhost:27017，唯一数据存储）
++├── memories      # 记忆区：L1/L2 文档
++│   └── { _id, level, content, timestamp, session_id }
++└── documents     # 文档区：完整 Markdown 全文
++    └── { _id, doc_id, filename, markdown, uploaded_at }
++```
++集合分明，就像档案柜里「记忆抽屉」与「论文抽屉」各居其位，用 Compass 或 PyMongo 即可随时取阅。
++
++**延伸阅读**：详见 [模块 1](./01-Python文档工具.md) 与 [模块 4](./04-TMT记忆系统.md)，以及 [MongoDB 官方文档](https://www.mongodb.com/zh-cn/docs/manual/core/databases-and-collections/)

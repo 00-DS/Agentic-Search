@@ -1,0 +1,191 @@
+diff --git a/任务文档/01-Python文档工具.md b/任务文档/01-Python文档工具.md
+index 773efd7..89eee5b 100644
+--- a/任务文档/01-Python文档工具.md
++++ b/任务文档/01-Python文档工具.md
+@@ -10,11 +10,11 @@
+ 
+ 1. 理解 **Python 包化布局（src layout）**，说明 `backend/src/agentic_search/` 这种结构与单文件 `.py` 的区别，以及工业项目采用它的原因
+ 2. 使用 **uv** 创建包化项目，通过 `pyproject.toml` 声明包名与依赖，并用 `uv sync` / `pip install -e .` 完成可编辑安装
+-3. 使用 **pydantic-settings** 编写配置层 `core/config.py`，从 `.env` 读取 LLM 模型名、MongoDB 连接配置、超时，避免在代码中硬编码
++3. 使用 **pydantic-settings** 编写配置层 `configs/config.py`，从 `.env` 读取 LLM 模型名、MongoDB 连接配置、超时，避免在代码中硬编码
+ 4. 使用 **pymupdf + PyMongo** 在 `services/documents.py` 中实现 `parse_pdf`、`store_document`、`list_documents`、`read_document` 四个文档工具函数，把 PDF 提取的纯文本全文存入 MongoDB
+ 5. 使用 **pytest** 为文档工具编写并运行单元测试
+ 
+-本模块的产出是后端包的「地基」部分：包化骨架（`pyproject.toml` + `src/agentic_search/`）、配置层（`core/config.py`）与文档服务（`services/documents.py`），以及对应的测试文件 `tests/test_documents.py`。这些函数将在[模块 3：LangGraph Agent](./03-LangGraph-Agent.md) 中被 Agent 的 `read_and_answer` 节点调用——Agent 读取本模块产出的 Markdown 全文，作为上下文交给 LLM 进行语义理解与问答。
++本模块的产出是后端包的「地基」部分：包化骨架（`pyproject.toml` + `src/agentic_search/`）、配置层（`configs/config.py`）与文档服务（`services/documents.py`），以及对应的测试文件 `tests/test_documents.py`。这些函数将在[模块 3：LangGraph Agent](./03-LangGraph-Agent.md) 中被 Agent 的 `read_and_answer` 节点调用——Agent 读取本模块产出的 Markdown 全文，作为上下文交给 LLM 进行语义理解与问答。
+ 
+ ---
+ 
+@@ -33,7 +33,7 @@
+ tools.py                 src/
+ parse_pdf()              └── agentic_search/
+                              ├── __init__.py
+-                             ├── core/config.py
++                             ├── configs/config.py
+                              └── services/documents.py
+ ```
+ 
+@@ -57,7 +57,7 @@ parse_pdf()              └── agentic_search/
+ 
+ ### MongoDB 与 PyMongo
+ 
+-**MongoDB** 是面向文档的 NoSQL 数据库。它不使用关系型数据库的「表-行-列」，而是把数据存为 **JSON 风格的文档（document）**。其层级结构为：一个 **数据库（database）** 下包含若干 **集合（collection）**，每个集合里存放若干 **文档（document）**。本项目用 `agentic_search_db` 数据库下的 `documents` 集合存放论文 Markdown 全文，`memories` 集合存放 L1/L2 记忆。
++**MongoDB** 是面向文档的 NoSQL 数据库。它不使用关系型数据库的「表-行-列」，而是把数据存为 **JSON 风格的文档（document）**。其层级结构为：一个 **数据库（database）** 下包含若干 **集合（collection）**，每个集合里存放若干 **文档（document）**。本项目用 `agentic_search` 数据库下的 `documents` 集合存放论文 Markdown 全文，`memories` 集合存放 L1/L2 记忆。
+ 
+ 相比把数据散落在磁盘上的 `.json` / `.md` 文件，用 MongoDB 集中存储有三点优势：第一，**原子性与一致性**——数据库的写入是原子的，不会出现「写了一半」的损坏文件；第二，**按条件查询**——可以用 `doc_id`、`level` 等字段精确检索，而非遍历整个目录；第三，**可视化**——用 MongoDB Compass 可以直观地浏览、搜索数据，便于教学调试。
+ 
+@@ -147,15 +147,22 @@ agentic-search/
+ 
+ ### 1.1 初始化包项目
+ 
+-打开命令行，进入项目根目录，创建并进入 `backend/`：
++打开命令行，进入项目根目录，用 `uv init --lib <包名>` 初始化库项目（直接把包名传给 `uv init`，从源头让生成物命名正确）：
+ 
+ ```bash
+-mkdir backend
++uv init --lib agentic-search
++```
++
++`uv init --lib agentic-search` 会创建一个名为 `agentic-search/` 的目录，其内部已经生成 `pyproject.toml`（含 `[build-system]` 字段）和 `src/agentic_search/`（连字符自动转下划线，命名已正确）。
++
++随后**手动把目录调整到本项目的 `backend/` 位置**——把生成的 `agentic-search/` 改名为 `backend/`（或将其内容移入已有的 `backend/`）：
++
++```bash
++mv agentic-search backend
+ cd backend
+-uv init --lib .
+ ```
+ 
+-`uv init --lib` 创建一个**库项目**：生成 `pyproject.toml`（含构建后端声明）和 `src/` 目录结构。这与 `uv init`（默认的应用项目）的区别在于，库项目会带上 `[build-system]` 字段，使其可被 `pip install`。
++`uv init --lib` 创建的是**库项目**：生成 `pyproject.toml`（含构建后端声明）和 `src/` 目录结构。这与 `uv init`（默认的应用项目）的区别在于，库项目会带上 `[build-system]` 字段，使其可被 `pip install`。
+ 
+ ### 1.2 指定 Python 版本
+ 
+@@ -171,7 +178,7 @@ uv python pin 3.11
+ 
+ ### 1.3 配置 `pyproject.toml`
+ 
+-`uv init --lib` 生成的 `pyproject.toml` 已有基本骨架。需要将其中的包名改为 `agentic-search`，并补充依赖。以下是**教学示例，展示关键字段，非完整文件**：
++由于初始化时已传入包名 `agentic-search`，生成的 `pyproject.toml` 已有正确的 `name` 字段，无需再改包名，只补充依赖即可。以下是**教学示例，展示关键字段，非完整文件**：
+ 
+ ```toml
+ [project]
+@@ -201,7 +208,7 @@ packages = ["src/agentic_search"]   # 告诉构建工具：包源码在 src/agen
+ - `dependencies` 列出运行时依赖。本模块需 `pymupdf`、`pydantic-settings`、`pymongo`；`pytest` 放在 `dev` 分组，不污染生产环境。
+ - `[build-system]` 与 `[tool.hatch.build.targets.wheel]` 告诉构建工具：用 hatchling 打包，源码包位于 `src/agentic_search`。这一段是「可被 pip 安装」的前提，缺少它则 `pip install -e .` 无法定位源码。
+ 
+-> `uv init --lib` 默认生成的包名可能是 `backend`。请务必改为 `agentic-search`，并确保 `src/` 下的目录名是 `agentic_search`（下划线）。若目录名不符，需用 `mv` 重命名。
++> 因为初始化命令已指定包名 `agentic-search`，`src/` 下的目录名自动为 `agentic_search`（下划线），无需手动改名。
+ 
+ ### 1.4 安装依赖与可编辑安装
+ 
+@@ -231,7 +238,7 @@ mkdir -p src/agentic_search/core src/agentic_search/services
+ mkdir -p tests
+ ```
+ 
+-每个 Python 子包（`core/`、`services/`）都需要一个 `__init__.py` 文件（可为空）来标记其为包。`agentic_search/__init__.py` 由 `uv init --lib` 自动生成。
++每个 Python 子包（`configs/`、`services/`）都需要一个 `__init__.py` 文件（可为空）来标记其为包。`agentic_search/__init__.py` 由 `uv init --lib` 自动生成。
+ 
+ **验证依赖安装**：
+ 
+@@ -243,7 +250,7 @@ uv run python -c "import pymupdf; from pydantic_settings import BaseSettings; im
+ 
+ ---
+ 
+-## 步骤 2：`core/config.py` — 配置层
++## 步骤 2：`configs/config.py` — 配置层
+ 
+ ### 为什么需要配置层
+ 
+@@ -273,7 +280,7 @@ MONGO_DB=agentic_search
+ 
+ > 在实际开发中，请将 `.env.example` 复制为 `.env`：`cp .env.example .env`。并将 `.env` 加入 `.gitignore`。
+ 
+-### 2.2 编写 `core/config.py`
++### 2.2 编写 `configs/config.py`
+ 
+ 用 pydantic-settings 把上面的 `.env` 映射为类型安全的 Python 对象。以下是**教学示例，展示核心逻辑，非完整实现**：
+ 
+@@ -307,7 +314,7 @@ settings = Settings()
+ 
+ - 继承 `BaseSettings` 的类会自动从 `.env` 文件与环境变量读取值。字段名 `llm_model` 对应 `.env` 中的 `LLM_MODEL`（大小写与下划线/连字符的对应关系由 pydantic-settings 自动处理）。
+ - 每个字段的类型注解（`str`、`int`）同时是**默认值**和**类型校验规则**。`.env` 未提供时用默认值；提供了但类型不符（如超时写成 `"abc"`）会在启动时抛出校验错误。
+-- 末尾 `settings = Settings()` 创建一个模块级单例。整个项目通过 `from agentic_search.core.config import settings` 引用同一个配置对象，避免反复读取文件。
++- 末尾 `settings = Settings()` 创建一个模块级单例。整个项目通过 `from agentic_search.configs.config import settings` 引用同一个配置对象，避免反复读取文件。
+ 
+ **验证**（在 `backend/` 目录下执行）：
+ 
+@@ -315,7 +322,7 @@ settings = Settings()
+ uv run python -c "from agentic_search.configs.config import settings; print(settings.mongo_url, settings.mongo_db, settings.llm_model)"
+ ```
+ 
+-预期输出：`mongodb://localhost:27017 agentic_search_db gpt-4o-mini`（或 `.env` 中填写的值）。若你修改了 `.env`，输出会随之变化——这正是配置层的目的。
++预期输出：`mongodb://localhost:27017 agentic_search gpt-4o-mini`（或 `.env` 中填写的值）。若你修改了 `.env`，输出会随之变化——这正是配置层的目的。
+ 
+ ---
+ 
+@@ -418,7 +425,7 @@ uv run python -c "from agentic_search.services.documents import parse_pdf; print
+ 
+ `parse_pdf` 只负责把 PDF 转成 Markdown 文本；持久化由 `store_document` 完成。它把转换后的完整 Markdown 全文连同文档标识、文件名、上传时间写入 MongoDB 的 `documents` 集合。集合中每条记录的固定结构为 `{_id, doc_id, filename, markdown, uploaded_at}`。
+ 
+-> 在 MongoDB 术语中，一个 database（本项目为 `agentic_search_db`）下有若干 collection（集合，本项目为 `documents` 与 `memories`），每个集合里存放若干 document（文档，即一条记录）。注意区分「集合 collection」与「文档 document」：前者是表，后者是行。
++> 在 MongoDB 术语中，一个 database（本项目为 `agentic_search`）下有若干 collection（集合，本项目为 `documents` 与 `memories`），每个集合里存放若干 document（文档，即一条记录）。注意区分「集合 collection」与「文档 document」：前者是表，后者是行。
+ 
+ MongoDB 的连接通过 PyMongo 的 `MongoClient` 建立。以下是**教学示例，展示核心逻辑，非完整实现**：
+ 
+@@ -426,7 +433,7 @@ MongoDB 的连接通过 PyMongo 的 `MongoClient` 建立。以下是**教学示
+ from datetime import datetime, timezone
+ from pymongo import MongoClient
+ 
+-from agentic_search.core.config import settings
++from agentic_search.configs.config import settings
+ 
+ 
+ # 模块级连接：MongoDB 连接建立后可复用，不必每次操作都新建客户端
+@@ -454,7 +461,7 @@ def store_document(doc_id: str, filename: str, markdown: str) -> None:
+ - **`uploaded_at`**：记录上传时间。`datetime.now(timezone.utc)` 用带时区的 UTC 时间，避免不同服务器时区不一致导致的排序错误。
+ - **零文件系统依赖**：上传的 PDF 经 marker-pdf 转换后即丢弃，不在磁盘上留存任何 `.md` 文件。所有数据集中在 MongoDB 一处，便于备份、迁移与可视化查看。
+ 
+-**验证**：先用 `parse_pdf` 转换一个 PDF，再调用 `store_document` 存入，然后打开 **MongoDB Compass** 查看 `agentic_search_db` 的 `documents` 集合——应能看到一条新记录，其 `markdown` 字段含完整的 `#` 标题结构。
++**验证**：先用 `parse_pdf` 转换一个 PDF，再调用 `store_document` 存入，然后打开 **MongoDB Compass** 查看 `agentic_search` 的 `documents` 集合——应能看到一条新记录，其 `markdown` 字段含完整纯文本全文。
+ 
+ ### 3.3 `list_documents()` 与 `read_document(doc_id)`
+ 
+@@ -654,7 +661,7 @@ print(content[:200])
+ "
+ ```
+ 
+-**验证**：命令正常执行，输出文档列表与文档内容，Markdown 中包含 `#` 标题结构，无报错。随后打开 **MongoDB Compass**，连接 `mongodb://localhost:27017`，在 `agentic_search_db` 数据库的 `documents` 集合中应能看到刚才存入的记录，其 `markdown` 字段含完整全文。
++**验证**：命令正常执行，输出文档列表与文档内容，Markdown 中包含 `#` 标题结构，无报错。随后打开 **MongoDB Compass**，连接 `mongodb://localhost:27017`，在 `agentic_search` 数据库的 `documents` 集合中应能看到刚才存入的记录，其 `markdown` 字段含完整全文。
+ 
+ ---
+ 
+@@ -662,16 +669,16 @@ print(content[:200])
+ 
+ 以下条件全部满足，本模块才算完成：
+ 
+-- [ ] `backend/pyproject.toml` 存在，包名为 `agentic-search`，包含 `marker-pdf`、`pydantic-settings`、`pymongo`、`pytest`（dev）
+-- [ ] `backend/src/agentic_search/core/config.py` 存在，`settings` 含 `mongo_uri`、`mongo_db`，可从 `.env` 读取配置
++- [ ] `backend/pyproject.toml` 存在，包名为 `agentic-search`，包含 `pymupdf`、`pydantic-settings`、`pymongo`、`pytest`（dev）
++- [ ] `backend/src/agentic_search/configs/config.py` 存在，`settings` 含 `mongo_uri`、`mongo_db`，可从 `.env` 读取配置
+ - [ ] `backend/src/agentic_search/services/documents.py` 包含 `parse_pdf`、`store_document`、`list_documents`、`read_document`
+-- [ ] MongoDB 服务已启动（`localhost:27017`），MongoDB Compass 可连接查看 `agentic_search_db`
++- [ ] MongoDB 服务已启动（`localhost:27017`），MongoDB Compass 可连接查看 `agentic_search`
+ - [ ] 可编辑安装成功：
+ 
+ ```bash
+ cd backend
+ uv sync
+-uv run python -c "from agentic_search.services.documents import parse_pdf; from agentic_search.core.config import settings; print(settings.mongo_uri); print('包化 import 成功')"
++uv run python -c "from agentic_search.services.documents import parse_pdf; from agentic_search.configs.config import settings; print(settings.mongo_uri); print('包化 import 成功')"
+ ```
+ 
+ - [ ] 所有测试通过（全绿）：
+@@ -755,6 +762,6 @@ file_path = Path("论文.pdf")               # parse_pdf 接收文件路径，
+ 
+ ## 下一步
+ 
+-本模块完成了后端包的地基：包化布局、配置层、文档服务。在[模块 3：LangGraph Agent](./03-LangGraph-Agent.md) 中，Agent 的 `read_and_answer` 节点将调用本模块的 `read_document` 读取论文 Markdown 全文，作为上下文交给 LLM；同时 Agent 会用到 `core/config.py` 中的 LLM 配置，并通过 FastAPI 把整个工作流暴露为 HTTP API。
++本模块完成了后端包的地基：包化布局、配置层、文档服务。在[模块 3：LangGraph Agent](./03-LangGraph-Agent.md) 中，Agent 的 `read_and_answer` 节点将调用本模块的 `read_document` 读取论文 Markdown 全文，作为上下文交给 LLM；同时 Agent 会用到 `configs/config.py` 中的 LLM 配置，并通过 FastAPI 把整个工作流暴露为 HTTP API。
+ 
+ 按照学习路径（模块 1 → 模块 3 → 模块 2 → 模块 4），接下来进入[模块 3：LangGraph Agent](./03-LangGraph-Agent.md)，在文档能力之上构建「分析意图 → 读文档 → 回答」的 Agent 工作流。

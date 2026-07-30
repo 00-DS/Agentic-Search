@@ -1,0 +1,1 @@
+14dd10d docs(01): uv init with name, rename core->configs, db name agentic_search
