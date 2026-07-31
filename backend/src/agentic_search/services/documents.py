@@ -1,8 +1,10 @@
-from datetime import UTC, datetime
-from zoneinfo import ZoneInfo
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
 import pymupdf
 from pymongo import MongoClient
+
 from agentic_search.configs.config import settings
 
 
