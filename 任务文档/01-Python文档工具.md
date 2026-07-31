@@ -437,7 +437,7 @@ from agentic_search.configs.config import settings
 
 
 # 模块级连接：MongoDB 连接建立后可复用，不必每次操作都新建客户端
-_client = MongoClient(settings.mongo_uri)
+_client = MongoClient(settings.mongo_url)
 _db = _client[settings.mongo_db]
 _documents_collection = _db["documents"]
 
