@@ -1,6 +1,5 @@
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import pymupdf
 from pymongo import MongoClient
@@ -28,7 +27,7 @@ def store_document(doc_id: str,
             "doc_id": doc_id,
             "filename": filename,
             "markdown": markdown,
-            "uploaded_at": datetime.now(ZoneInfo("Asia/Shanghai")),
+            "uploaded_at": datetime.now(),
         }
     )
 
