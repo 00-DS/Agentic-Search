@@ -1,6 +1,6 @@
 # 模块 4：TMT 记忆系统最小实现
 
-> 前置模块：[模块 3：LangGraph Agent](./03-LangGraph-Agent.md)、[模块 2：HTML 前端](./02-HTML前端.md)
+> 前置模块：[模块 2：LangGraph Agent](./02-LangGraph-Agent.md)、[模块 3：HTML 前端](./03-HTML前端.md)
 
 ---
 
@@ -119,6 +119,8 @@ class Memory:
 - `level`：决定该条记忆在 TMT 树中的层级。检索时可根据查询复杂度选择只看 L1（细节）或 L2（摘要）。
 - `session_id`：是 L2 幂等的关键——整合时先按 `session_id` 查询是否已存在 L2，有则更新、无则新建。
 - `asdict()`：dataclass 自带的字典转换方法，后续 `save_memory` 会用它把对象转为 MongoDB document 写入。
+
+**`@dataclass` 也是装饰器**：它和[模块 2](./02-LangGraph-Agent.md) 的 `@retry` 是同一种机制——接收 `Memory` 类，返回一个自动生成了 `__init__`/`__repr__` 等方法的「增强版」类。区别只在提供者：`@retry` 是我们手写的，`@dataclass` 是标准库给的。以后看到 `@` 就想到「有东西在给下面的函数/类套一层加工」即可。
 
 **验证：** 在 Python REPL 中创建 `Memory` 实例，确认字段可正常赋值，且 `asdict()` 输出符合预期。
 
@@ -302,7 +304,7 @@ def retrieve(query: str, max_results: int = 5) -> list[Memory]:
 
 ### 3.1 端点定义（api/routes.py）
 
-在 [模块 3](./03-LangGraph-Agent.md) 实现的 `api/routes.py` 中新增第 4 个端点：
+在 [模块 2](./02-LangGraph-Agent.md) 实现的 `api/routes.py` 中新增第 4 个端点：
 
 ```python
 # 教学示例：展示端点核心逻辑，非完整实现
@@ -336,7 +338,7 @@ def consolidate(request: ConsolidateRequest):
 
 ### 3.2 前端按钮（frontend/app.js）
 
-在 [模块 2](./02-HTML前端.md) 实现的前端中，「整合会话记忆（L2）」按钮绑定 `consolidateMemory()`：
+在 [模块 3](./03-HTML前端.md) 实现的前端中，「整合会话记忆（L2）」按钮绑定 `consolidateMemory()`：
 
 ```javascript
 // 教学示例：展示按钮逻辑，非完整实现
@@ -357,19 +359,21 @@ async function consolidateMemory() {
 
 ## 第 4 步：集成到 Agent 图
 
-[模块 3](./03-LangGraph-Agent.md) 的图有 2 个工作节点（`analyze_intent → read_and_answer`）。现在插入 2 个记忆节点，扩展为：
+[模块 2](./02-LangGraph-Agent.md) 的 Agent 图是一个 **ReAct 循环**：`llm_call`（LLM 决策）与 `tool_node`（执行工具）之间靠条件边 `should_continue` 往返，直到 LLM 不再调工具、给出最终答案。现在把两个记忆节点挂在这个循环的**前后**——`retrieve_memory` 在循环开始前注入历史记忆，`store_memory` 在循环结束后提取本轮事实。记忆像一层外壳，把 agent 循环包裹在中间：
 
 ```
-__start__ → analyze_intent → retrieve_memory → read_and_answer → store_memory → __end__
+__start__ → retrieve_memory → [ llm_call ⇄ tool_node ] → store_memory → __end__
 ```
 
-**retrieve_memory 节点**（`analyze_intent` 之后）：
-调用 `memory.retrieve(query)`，将检索到的记忆注入 State 的 `retrieved_memories` 字段。后续 `read_and_answer` 节点可将这些记忆作为额外上下文加入 LLM prompt。
+方括号内是模块 2 的 agent ReAct 循环：条件边 `should_continue` 看到 `tool_calls` 就走 `tool_node` 继续循环，否则走出循环到 `store_memory`（再由 `store_memory → __end__` 收尾）。原本循环结束直接到 `__end__`，插入记忆节点后多走一站 `store_memory`。
 
-**store_memory 节点**（`read_and_answer` 之后）：
-将本轮对话（query + answer）传给 `extract_l1` 提取事实，存入 MongoDB `memories` 集合。此节点不修改 State，只产生副作用。
+**retrieve_memory 节点**（循环**开始前**）：
+拿到用户问题后，调用 `memory.retrieve(query)` 检索相关 L1/L2 记忆，把它们格式化为一条 `SystemMessage`（如「这是关于该用户的已知事实：...」）追加进 State 的 `messages`。这样 agent 进入 `llm_call` 时，LLM 在 `messages` 里既能看到用户问题，也能看到历史记忆，回答时便可引用过去的偏好与背景。
 
-需要在 `SearchState` 中新增两个字段：`session_id` 和 `retrieved_memories`。
+**store_memory 节点**（循环**结束、`__end__` 前**）：
+agent 给出最终答案、循环终止后，把本轮对话（用户问题 + agent 最终回答）传给 `extract_l1` 提取原子事实，存入 MongoDB `memories` 集合。此节点不修改 `messages`，只产生副作用（写库）。
+
+模块 2 的 `AgentState`（带 `messages`、`question` 两个字段的 TypedDict）需再加一个 `session_id` 字段，供 `store_memory` 给提取出的 L1 事实打上会话标签（L2 幂等也靠它定位）。记忆本身不再单独占字段——它们直接混入 `messages`，对 agent 透明。
 
 > 注意：L1 提取在每轮对话后**自动**触发（`store_memory` 节点内），而 L2 整合由**手动按钮**触发。两者触发时机不同——L1 是细粒度的实时记录，L2 是粗粒度的人为压缩。
 
