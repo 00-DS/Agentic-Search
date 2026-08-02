@@ -413,10 +413,11 @@ def parse_pdf(pdf_path: str | Path) -> list[dict]:
         raise FileNotFoundError(f"文件不存在：{pdf_path}")
     doc = pymupdf.open(p)
     sections = _extract_sections(doc)        # 见下方启发式实现
-    doc.close()
     if not sections:                         # 兜底：未检测出任何标题
-        return [{"section_id": 0, "title": "(全文)", "level": 0,
-                 "text": "\n".join(page.get_text() for page in doc)}]
+        fallback = "\n".join(page.get_text() for page in doc)
+        doc.close()
+        return [{"section_id": 0, "title": "(全文)", "level": 0, "text": fallback}]
+    doc.close()
     return sections
 
 
