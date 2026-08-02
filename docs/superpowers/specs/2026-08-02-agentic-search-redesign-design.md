@@ -159,7 +159,7 @@ class QueryRequest(BaseModel):
 { "doc_id": "...", "filename": "...", "markdown": "全文纯文本", "uploaded_at": "..." }
 ```
 改成：
-```json
+{
   "doc_id": "...",
   "filename": "...",
   "sections": [
@@ -218,7 +218,7 @@ class QueryRequest(BaseModel):
 - UI 改成纯提问输入框——用户只管问，agent 自己找论文
 - **不动**：HTML 结构教学、fetch/AJAX 教学、FormData 上传教学、ReadableStream 流式渲染、模块 4 记忆展示
 
-
+### 5.4 04-TMT记忆系统.md（基本不动）
 记忆在新 agent 图里的挂法：`retrieve_memory` 是 agent 循环开始前的一个节点（把相关 L1/L2 记忆注入 `messages` 上下文，然后进入 `llm_call`）；`store_memory` 是 agent 循环结束、`__end__` 前的一个节点（把本轮问答提取为 L1 事实写入）。即「记忆包裹 agent 循环」，与旧线性图「记忆夹在 analyze_intent 和 read_and_answer 之间」是同构的拓扑——检索在前、存储在后。L2 整合端点 `/api/consolidate` 不变。具体节点签名与 state 字段在 implementation plan 阶段细化。
 
 ## 6. 数据流（重设计后）
