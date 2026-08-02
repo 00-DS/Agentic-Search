@@ -471,56 +471,67 @@ uv run python -c "from agentic_search.agents.tools import list_papers, list_sect
 
 ---
 
-## 第 7 步：组装 ReAct agent 图 —— `build_graph()`（[WIP]，第二部分补全）
+## 第 7 步：组装 ReAct agent 图 —— `build_graph()`
 
-> ⚠️ 本步属于本模块重设计的**第二部分**，将在后续提交中补全。下方骨架示意即将实现的结构，具体代码随后提交。
-
-第二部分将把第 2 步验证过的 ReAct 结构「落到真 LLM + 真工具」上：
+第 2 步用桩函数验证过 ReAct 的图结构（条件边 + 工具回流）。现在把它「落到真 LLM + 真工具」上——四件套（`init_chat_model` + `bind_tools` + `ToolNode` + `add_conditional_edges`）拼出完整的 agent：
 
 ```python
-# agents/graph.py（续）—— [WIP] 第二部分展开
+# agents/graph.py（续）—— 组装 ReAct agent 图
 from langchain.chat_models import init_chat_model
 from langgraph.prebuilt import ToolNode
 from langgraph.graph import StateGraph, START, END
+from agentic_search.configs.config import settings
 from agentic_search.agents.tools import list_papers, list_sections, read_section, search_sections
-
-tools = [list_papers, list_sections, read_section, search_sections]
-
-# init_chat_model 接 DeepSeek（OpenAI 兼容），bind_tools 开启工具调用
-llm = init_chat_model("deepseek-v4-flash", model_provider="openai",
-                      base_url=settings.llm_base_url, api_key=settings.llm_api_key,
-                      timeout=settings.llm_timeout)
-llm_with_tools = llm.bind_tools(tools)
-
-
-def llm_call(state):
-    # 第 5 步的 @retry 将包在这里的 .invoke() 上（重试整个含 bind_tools 的 LLM 调用）
-    response = llm_with_tools.invoke(state["messages"])
-    return {"messages": [response]}
-
-
-def should_continue(state):
-    last = state["messages"][-1]
-    return "tools" if getattr(last, "tool_calls", None) else END
 
 
 def build_graph():
+    """组装 ReAct agent 图：llm_call ⇄ tool_node 循环，条件边控制终止。"""
+    # ① 工具集（第 6 步定义）
+    tools = [list_papers, list_sections, read_section, search_sections]
+
+    # ② LLM：init_chat_model 接 DeepSeek（OpenAI 兼容接口），bind_tools 开启工具调用
+    llm = init_chat_model("deepseek-v4-flash", model_provider="openai",
+                          base_url=settings.llm_base_url, api_key=settings.llm_api_key,
+                          timeout=settings.llm_timeout)
+    llm_with_tools = llm.bind_tools(tools)
+
+    # ③ llm_call：LLM 决策节点。第 5 步的 @retry 包在这里——
+    #    重试整个含 bind_tools 的 .invoke()，而非包在 init_chat_model 工厂上（工厂只建一次，无需重试）
+    @retry(max_attempts=3)
+    def llm_call(state: AgentState):
+        response = llm_with_tools.invoke(state["messages"])
+        return {"messages": [response]}
+
+    # ④ 条件边：看最后一条消息有没有 tool_calls——
+    #    有就执行工具，没有（LLM 认为「读够了」）就结束
+    def should_continue(state: AgentState):
+        last = state["messages"][-1]
+        return "tool_node" if getattr(last, "tool_calls", None) else END
+
+    # ⑤ 组装：注册节点 → 入口边 → 条件边 → 工具回流
     builder = StateGraph(AgentState)
     builder.add_node("llm_call", llm_call)
-    builder.add_node("tools", ToolNode(tools))
+    builder.add_node("tool_node", ToolNode(tools))
     builder.add_edge(START, "llm_call")
-    builder.add_conditional_edges("llm_call", should_continue, ["tools", END])
-    builder.add_edge("tools", "llm_call")
+    builder.add_conditional_edges("llm_call", should_continue, ["tool_node", END])
+    builder.add_edge("tool_node", "llm_call")
     return builder.compile()
 ```
 
-第 5 步的 `@retry` 包在 `llm_call` 内部的 `.invoke()` 上——重试整个 LLM 调用（含 `bind_tools`），而不是包在 `init_chat_model` 工厂上（工厂只建一次，无需重试）。
+逐点拆解四件套如何把第 2 步的桩函数换成真 agent：
+
+- **`init_chat_model(...)` + `bind_tools(tools)`**：把第 6 步四个 `@tool` 函数的 schema 注入 LLM。开启后，LLM 的响应里就可能带 `tool_calls`（见技术概念的「先观察」），而不再只是纯文本。
+- **`ToolNode(tools)`**：替代第 2 步手写的 `get_time` 桩。它自动读上一条消息的 `tool_calls`，分发到对应工具、执行、把结果包成 `ToolMessage` 回灌——这就是「工具调用协议」的胶水，由 LangGraph 封装好。
+- **`add_conditional_edges("llm_call", should_continue, ...)`**：这是 agent 的**心脏**。`should_continue` 只看一眼最后一条消息——有 `tool_calls` 就跳到 `tool_node`，没有就到 `END`。对标 omp 探索代码库时的「搜索 → 读 → 再搜索」循环：何时停止完全由 LLM 在运行时决定，而非写死流程。
+- **`add_edge("tool_node", "llm_call")`**：工具执行完回到 LLM 再决策，形成 `llm_call ⇄ tool_node` 的循环。
+
+**为什么 `@retry` 包在 `llm_call` 而非 `init_chat_model` 上？** `init_chat_model(...)` 是工厂——只建一次客户端对象，建失败多半是配置错（重试也没用）；而 `llm_with_tools.invoke(...)` 是真正的网络调用，每轮都可能超时/断连，这才是该重试的对象。装饰器刚好套在「这一行调用」上——这正是第 5 步埋下的 `@retry` 与第 7 步图组装的衔接点。
 
 ```
 __start__ → llm_call ⇄ tool_node → __end__   （条件边 should_continue 控制循环与终止）
 ```
 
-> 下方第 8、9 步的 `QueryRequest` 与 `/api/query` 仍为旧版线性图形态（请求体含 `doc_id`、SSE 推送 `intent`），第二部分将一并改为「只收 `question`、流式推送 agent 回答」。
+> 📖 官方文档：[LangGraph ToolNode](https://langchain-ai.github.io/langgraph/how-tos/tool-calling/) · [LangChain init_chat_model](https://python.langchain.com/docs/how_to/chat_models_load/)
 
 ---
 
@@ -535,8 +546,7 @@ from pydantic import BaseModel
 
 class QueryRequest(BaseModel):
     """POST /api/query 的请求体。"""
-    question: str           # 用户提问
-    doc_id: str = ""        # 要查询的文档 ID，为空时取第一篇
+    question: str           # 用户提问；读哪篇论文由 agent 自主决定
 
 
 class IngestResponse(BaseModel):
@@ -585,6 +595,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File
 from fastapi.responses import StreamingResponse
+from langchain_core.messages import HumanMessage
 
 from agentic_search.agents.graph import build_graph
 from agentic_search.services.documents import parse_pdf, list_documents, store_document
@@ -613,19 +624,17 @@ graph = build_graph()
 ```python
 @router.post("/query")
 async def query(req: QueryRequest):
-    """向 Agent 提问，以 SSE 流式返回回答。"""
+    """向 Agent 提问，以 SSE 流式返回回答。读哪篇论文由 agent 自主决定。"""
     async def event_stream():
-        # 调用图：把请求体字段映射为图的初始状态
+        # 把用户提问包成 HumanMessage 交给 agent 图；agent 内部跑 ReAct 循环
+        # （llm_call ⇄ tool_node 多轮），最终把答案写在 messages 的最后一条
         result = graph.invoke({
-            "question": req.question,
-            "doc_id": req.doc_id,
+            "messages": [HumanMessage(content=req.question)],
+            "question": req.question,   # 填入 AgentState 的 question 字段，便于日志/调试
         })
+        answer = result["messages"][-1].content
 
-        # 推送意图信息
-        yield _sse("intent", result.get("intent", ""))
-
-        # 把回答分段推送（模拟逐字流式效果）
-        answer = result["answer"]
+        # 把最终回答分段推送（模拟逐字流式效果）
         for i in range(0, len(answer), 20):
             yield _sse("token", answer[i:i + 20])
 
@@ -773,17 +782,22 @@ curl http://localhost:8000/api/documents
 curl -X POST http://localhost:8000/api/ingest \
   -F "file=@/path/to/your_paper.pdf"
 
-# ③ 提问（SSE 流式）—— -N 禁用缓冲，逐行看到流式输出
+# ③ 提问（SSE 流式）—— -N 禁用缓冲，逐行看到流式输出；读哪篇论文由 agent 决定
 curl -N -X POST http://localhost:8000/api/query \
   -H "Content-Type: application/json" \
-  -d '{"question": "这篇论文的核心方法是什么？", "doc_id": "your_paper"}'
+  -d '{"question": "这篇论文的核心方法是什么？"}'
+
+# ④ 跨论文提问——观察 agent 自主调 list_papers → search_sections → read_section
+curl -N -X POST http://localhost:8000/api/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "对比语料库里两篇论文用了哪些不同的数据集？"}'
 ```
 
 **验证标准**：
 
 - `/api/documents` 返回文档列表（JSON 数组）。
 - `/api/ingest` 返回 `{"doc_id": "...", "filename": "..."}`。
-- `/api/query` 返回多行 SSE 数据（`data: {...}`），其中包含意图标签与一段基于论文内容的回答。
+- `/api/query` 返回多行 SSE 数据（`data: {...}`），含 agent 基于论文内容的回答；服务端终端可看到 `[retry]` 重试日志与 agent 多轮工具调用（`list_papers`/`search_sections`/`read_section`）的轨迹。
 - 访问 `http://localhost:8000/docs` 可看到 FastAPI 自动生成的交互式 API 文档。
 
 ---
@@ -796,18 +810,25 @@ curl -N -X POST http://localhost:8000/api/query \
 
 ```python
 # tests/test_graph.py —— 教学示例
+from langchain_core.messages import HumanMessage
 from agentic_search.agents.graph import build_graph
 
 
-def test_graph_returns_required_fields():
-    """图执行后应返回 answer 与 intent 字段。"""
+def test_graph_returns_answer():
+    """agent 跑完 ReAct 循环后，最后一条消息应是含答案的 AIMessage。"""
     graph = build_graph()
-    result = graph.invoke({"question": "测试问题"})
+    result = graph.invoke({
+        "messages": [HumanMessage(content="这篇论文的核心方法是什么？")],
+        "question": "这篇论文的核心方法是什么？",
+    })
 
-    assert "answer" in result
-    assert "intent" in result
-    assert len(result["answer"]) > 0
+    # agent 的多轮探索（list_papers → read_section → ...）都累加进 messages，
+    # 最后一条是它认为「读够了」后给出的最终 AIMessage
+    final = result["messages"][-1]
+    assert final.content   # 非空回答
 ```
+
+**观察 agent 的探索轨迹**：把 `result["messages"]` 逐条打印（或在服务端终端看日志），能看到 agent 的多轮决策——比如先 `list_papers` 看有哪些论文、再 `search_sections(pattern="dataset|corpus")` 定位、最后 `read_section` 取证。故意问一个**跨论文**问题（如「对比语料库里两篇论文的数据集差异」），观察 agent 在多篇论文间反复跳转的探索路径——这正是 agentic search 区别于「读一篇全文」的核心。
 
 ### 12.2 测试 API 接口
 
@@ -830,7 +851,7 @@ def test_documents_endpoint():
 
 def test_query_validation():
     """缺少 question 字段时应返回 422（Pydantic 校验失败）。"""
-    resp = client.post("/api/query", json={"doc_id": "x"})
+    resp = client.post("/api/query", json={})   # 不带 question，应 422
     assert resp.status_code == 422
 ```
 
@@ -855,7 +876,7 @@ uv run pytest tests/ -v
 - [ ] `uv run uvicorn agentic_search.main:app --reload --port 8000` 成功启动
 - [ ] `curl http://localhost:8000/api/documents` 返回 JSON 列表
 - [ ] `curl -X POST .../api/ingest -F "file=@论文.pdf"` 返回 `doc_id` 与 `filename`
-- [ ] `curl -N -X POST .../api/query -d '{"question":"...","doc_id":"..."}'` 返回 SSE 流，含意图标签与基于论文内容的回答
+- [ ] `curl -N -X POST .../api/query -d '{"question":"..."}'` 返回 SSE 流，含 agent 基于论文内容的回答（服务端终端可看到多轮工具调用日志）
 - [ ] 访问 `http://localhost:8000/docs` 能看到 4 个端点的交互式文档
 - [ ] `uv run pytest tests/ -v` 全部绿色
 
@@ -863,9 +884,9 @@ uv run pytest tests/ -v
 
 ## 常见问题
 
-### Q：`graph.invoke()` 报 `KeyError: 'question'`
+### Q：agent 一直调工具、停不下来（不直接回答）
 
-确认 `AgentState` 的字段名（`question`）与节点函数中读取的键名、API 请求体的字段名三者一致。本模块统一使用 `question`。
+说明 LLM 总觉得「还没读够」。常见原因：① `tool_node` 没把工具结果正确回灌（检查 `add_edge("tool_node", "llm_call")` 是否在）；② 语料库里确实没有相关信息，LLM 反复搜索同一批词。教学示例省略了兜底——正式实现可在 `should_continue` 里加一个最大轮数上限（如超过 10 轮强制 `END`）。
 
 ### Q：启动报 `ModuleNotFoundError: No module named 'agentic_search'`
 
@@ -890,6 +911,9 @@ uv run pytest tests/ -v
 ## 延伸阅读
 
 - **LangGraph 官方文档（核心概念）**：https://langgraph.com.cn/concepts/low_level/
+- **LangGraph ToolNode / 工具调用**：https://langchain-ai.github.io/langgraph/how-tos/tool-calling/
+- **LangChain init_chat_model / bind_tools**：https://python.langchain.com/docs/how_to/chat_models_load/
+- **LangChain 构建 ReAct agent**：https://langchain-ai.github.io/langgraph/tutorials/introduction/
 - **FastAPI 官方教程**：https://fastapi.tiangolo.com/zh/tutorial/
 - **FastAPI CORS 中间件**：https://fastapi.tiangolo.com/zh/tutorial/cors/
 - **Pydantic 官方文档**：https://pydantic.com.cn/
