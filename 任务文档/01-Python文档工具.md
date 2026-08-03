@@ -13,8 +13,9 @@
 3. 使用 **pydantic-settings** 编写配置层 `configs/config.py`，从 `.env` 读取 LLM 模型名、MongoDB 连接配置、超时，避免在代码中硬编码
 4. 使用 **pymupdf + PyMongo** 在 `services/documents.py` 中实现 `parse_pdf`（PDF 转纯文本）、`store_document`、`list_documents`、`read_document` 四个文档工具函数，把完整文本存入 MongoDB
 5. 使用 **pytest** 为文档工具编写并运行单元测试
+6. 使用 **LangChain `@tool` 装饰器** 在 `agents/tools.py` 中实现四个论文导航工具（`list_papers`/`read_paper`/`search_papers`/`extract_abstract`），理解装饰器如何从类型注解 + docstring 自动生成工具 schema
 
-本模块的产出是后端包的「地基」部分：包化骨架（`pyproject.toml` + `src/agentic_search/`）、配置层（`configs/config.py`）与文档服务（`services/documents.py`），以及对应的测试文件 `tests/test_documents.py`。这些函数将在[模块 2：LangGraph Agent](./02-LangGraph-Agent.md) 中被 Agent 的论文导航工具（`read_paper`/`search_papers` 等）调用——Agent 按行号按需读取本模块产出的完整文本片段，自主决定读哪篇、读哪段，而不是一次性把全文塞进上下文。
+本模块的产出是后端包的「地基」部分：包化骨架（`pyproject.toml` + `src/agentic_search/`）、配置层（`configs/config.py`）与文档服务（`services/documents.py`）、Agent 导航工具（`agents/tools.py`），以及对应的测试文件 `tests/test_documents.py`。这些函数将在[模块 2：LangGraph Agent](./02-LangGraph-Agent.md) 中被 Agent 的论文导航工具（`read_paper`/`search_papers` 等）调用——Agent 按行号按需读取本模块产出的完整文本片段，自主决定读哪篇、读哪段，而不是一次性把全文塞进上下文。
 
 ---
 
@@ -75,6 +76,10 @@ parse_pdf()              └── agentic_search/
 
 **pytest** 是 Python 的测试框架。核心规则有三条：测试文件以 `test_` 开头（如 `test_documents.py`）、测试函数以 `test_` 开头（如 `test_parse_pdf`）、用 Python 原生的 `assert` 语句做断言。运行：`uv run pytest tests/ -v`。
 
+### LangChain `@tool` 装饰器
+
+**装饰器（decorator）** 是「在不改写函数体的前提下，给函数套一层额外逻辑」的语法，`@` 只是语法糖。LangChain 的 `@tool` 装饰器从函数的类型注解和 docstring 自动生成工具 schema，让 LLM 能「看到」这个工具的名字、参数、用途。本模块用它把四个普通函数（`list_papers`/`read_paper`/`search_papers`/`extract_abstract`）注册成 agent 可调用的工具。[模块 2](./02-LangGraph-Agent.md) 还会用 `@retry`（自定义重试）和 `@router.post`（FastAPI 路由）两次「点亮」同一个装饰器机制。
+
 ---
 
 ## 前置要求
@@ -90,7 +95,7 @@ parse_pdf()              └── agentic_search/
 
 ## 模块结构
 
-本模块在后端包中建立三个部分：包化骨架、配置层、文档服务。它们的依赖关系如下：
+本模块在后端包中建立四个部分：包化骨架、配置层、文档服务、Agent 导航工具。它们的依赖关系如下：
 
 ```mermaid
 graph LR
@@ -98,9 +103,12 @@ graph LR
     subgraph Box["agentic_search 包"]
         Pkg["包根目录"]
         Services["文档服务<br/>documents.py"]
+        Tools["Agent 工具<br/>tools.py"]
         Core["配置层<br/>config.py"]
     end
     Pkg --> Services
+    Services --> Tools
+    Tools -->|"调用"| Services
     Services --> Pymupdf["pymupdf<br/>PDF 转纯文本"]
     Pymupdf --> Docs[("MongoDB documents<br/>完整文本")]
     Core -.->|"提供连接配置"| Services
@@ -130,9 +138,12 @@ agentic-search/
     │       ├── configs/
     │       │   ├── __init__.py
     │       │   └── config.py       # 本模块创建：配置层
-    │       └── services/
-    │           ├── __init__.py
-    │           └── documents.py    # 本模块创建：文档工具
+    │       ├── services/
+    │       │   ├── __init__.py
+    │       │   └── documents.py    # 本模块创建：文档工具
+    │       ├── agents/
+    │       │   ├── __init__.py
+    │       │   └── tools.py        # 本模块创建：Agent 论文导航工具（list_papers/read_paper/search_papers/extract_abstract）
     └── tests/
         └── test_documents.py       # 本模块创建：pytest 测试
 ```
@@ -189,6 +200,7 @@ dependencies = [
     "pymupdf",                      # PDF → 纯文本提取（get_text("text")）
     "pydantic-settings",            # 配置层：从 .env 读取并做类型校验
     "pymongo",                     # MongoDB Python 驱动（同步）：存取文档文本与记忆
+    "langchain",                    # LangChain：@tool 装饰器（把函数注册成 agent 工具）
 ]
 
 [dependency-groups]
@@ -234,13 +246,13 @@ uv run python -c "import agentic_search; print(agentic_search.__file__)"
 ### 1.5 创建目录结构
 
 ```bash
-mkdir -p src/agentic_search/configs src/agentic_search/services
+mkdir -p src/agentic_search/configs src/agentic_search/services src/agentic_search/agents
 mkdir -p tests
 # 为每个子包创建空的 __init__.py（标记为 Python 包，原理见下）
-touch src/agentic_search/configs/__init__.py src/agentic_search/services/__init__.py
+touch src/agentic_search/configs/__init__.py src/agentic_search/services/__init__.py src/agentic_search/agents/__init__.py
 ```
 
-每个 Python 子包（`configs/`、`services/`）都需要一个空的 `__init__.py` 文件来标记其为 Python 包。`agentic_search/__init__.py` 由 `uv init --lib` 自动生成。
+每个 Python 子包（`configs/`、`services/`、`agents/`）都需要一个空的 `__init__.py` 文件来标记其为 Python 包。`agentic_search/__init__.py` 由 `uv init --lib` 自动生成。
 
 **验证依赖安装**：
 
@@ -500,7 +512,114 @@ if docs:
 
 ---
 
-## 步骤 4：编写测试 — `test_documents.py`
+## 步骤 4：`agents/tools.py` — 论文导航工具集
+
+Agent 的「手和眼」——四个工具，对标 omp 探索代码库的 `glob`/`read`/`grep`/`summarize`。用 LangChain 的 `@tool` 装饰器声明：装饰器会从函数的**类型注解 + docstring** 自动生成工具 schema，告诉 LLM「这个工具叫什么、接收什么参数、干什么」。
+
+> **`@tool` 是什么？** 它是装饰器（decorator）的一种——`@` 语法糖给函数套一层额外逻辑。`@tool` 做的事是：接收下面的函数，从它的参数类型注解和 docstring 提取出工具名、参数描述、用途说明，自动生成一份 LLM 能读懂的 schema。函数体一行没改，但它已经变成了一个「LLM 可以调用的工具」。后续[模块 2](./02-LangGraph-Agent.md) 还会两次「点亮」同一个装饰器机制：`@retry`（自定义重试装饰器）和 `@router.post`（FastAPI 路由注册），以及模块 4 的标准库 `@dataclass`——都是装饰器，只是来自不同的库。
+
+新建 `agents/tools.py`：
+
+```python
+# agents/tools.py —— 教学示例：四个论文导航工具
+import re
+from langchain.tools import tool
+from agentic_search.services.documents import (
+    list_documents, read_document, _documents_collection,
+)
+
+
+def _get_doc_text(doc_id: str) -> str:
+    """按 doc_id 取出整篇文档的完整文本。找不到抛 KeyError。"""
+    doc = _documents_collection.find_one({"doc_id": doc_id})
+    if doc is None:
+        raise KeyError(f"文档不存在: {doc_id}")
+    return doc["text"]
+
+
+@tool
+def list_papers() -> list[dict]:
+    """列出语料库中所有论文。返回 [{doc_id, filename}]，不带正文。
+    对标 omp 的 glob：只列有哪些文件，不返回内容——判断相关性靠后续自主探索。
+    """
+    return list_documents()
+
+
+@tool
+def read_paper(doc_id: str, start_line: int = 1, end_line: int = 50) -> str:
+    """读取指定论文的指定行号范围。返回原始文本行。
+    对标 omp 的 read :50-100：按行号取片段，而不是返回全文。
+    """
+    text = _get_doc_text(doc_id)
+    lines = text.split("\n")
+    # 行号是 1-indexed，列表是 0-indexed
+    return "\n".join(lines[start_line - 1 : end_line])
+
+
+@tool
+def search_papers(pattern: str, doc_id: str = "") -> list[dict]:
+    """跨语料库（或指定论文）用正则搜索内容。返回 [{doc_id, line_number, line}]。
+    对标 omp 的 grep：参数是正则 pattern（不是语义 query），命中后 agent 通常再调
+    read_paper 按行号深入——搜索只给位置和片段，不给全文。
+    """
+    regex = re.compile(pattern)
+    hits = []
+    docs = [_documents_collection.find_one({"doc_id": doc_id})] if doc_id else list(_documents_collection.find({}))
+    for d in docs:
+        if d is None:
+            continue
+        for i, line in enumerate(d["text"].split("\n"), 1):
+            if regex.search(line):
+                hits.append({"doc_id": d["doc_id"], "line_number": i, "line": line})
+    return hits
+
+
+@tool
+def extract_abstract(doc_id: str) -> str:
+    """提取论文的 Abstract 段落。agent 按需调用，快速判断论文是否相关。
+    对标 omp 的 summarizeCode()：读取时的概览便利，不是上传预处理。
+    """
+    text = _get_doc_text(doc_id)
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        if line.strip().lower() == "abstract":          # "abstract" 独立成段才算数
+            # 收集其下方第一个非空自然段
+            for j in range(i + 1, len(lines)):
+                para = lines[j].strip()
+                if para:                                  # 找到非空行，收集到空行为止
+                    end = j + 1
+                    while end < len(lines) and lines[end].strip():
+                        end += 1
+                    return "\n".join(lines[j:end])
+            return "Abstract 标题下方无内容"
+    return "未找到独立 Abstract 段落"
+```
+
+四工具与 omp 的对应关系：
+
+| 工具 | 签名 | 返回 | 对应 omp |
+|------|------|------|----------|
+| `list_papers` | `() -> list[dict]` | 语料库所有论文：`doc_id` + `filename`（**不带正文**） | `glob` |
+| `read_paper` | `(doc_id, start_line?, end_line?) -> str` | 指定行号范围的原始文本 | `read :50-100` |
+| `search_papers` | `(pattern, doc_id?) -> list[dict]` | 正则命中的 `doc_id`+`line_number`+`line` | `grep` |
+| `extract_abstract` | `(doc_id) -> str` | Abstract 段落（或未找到提示） | `summarizeCode()` |
+
+**为什么 `search_papers` 用正则、不用 embedding？** 这是对齐 omp `grep` 的核心决策。embedding/向量库会引入额外依赖、上传时做向量入库、让搜索结果不可解释。正则命中是人能读懂的精确匹配，智能来自 LLM 自主迭代构造正则——**正则匹配、零额外依赖、结果可解释**。
+
+**为什么 `extract_abstract` 是工具、不是上传预处理？** 对齐 omp 的 `summarizeCode()`：它是**读取时的可选便利**，agent 按需调用，不是入库步骤。上传时只做格式转换（PDF → 纯文本），不做任何内容分析。
+
+**验证**：
+
+```bash
+cd backend
+uv run python -c "from agentic_search.agents.tools import list_papers, read_paper, search_papers, extract_abstract; print([t.name for t in [list_papers, read_paper, search_papers, extract_abstract]])"
+```
+
+看到四个工具名即正确。
+
+---
+
+## 步骤 5：编写测试 — `test_documents.py`
 
 ### 为什么写测试
 
@@ -533,7 +652,7 @@ with pytest.raises(FileNotFoundError):
 
 创建 `tests/test_documents.py`。注意：所有 import 都用包化路径，这与扁平结构下手动改 `sys.path` 的做法不同——包化布局天然让测试能 import 到源码。
 
-#### 4.1 测试 `parse_pdf`
+#### 5.1 测试 `parse_pdf`
 
 `parse_pdf` 是纯提取函数（输入文件路径、输出纯文本字符串），不依赖 MongoDB，测试最直接：
 
@@ -557,7 +676,7 @@ def test_parse_pdf_file_not_found():
 
 > 你需要准备一个测试用 PDF（放在 `backend/` 目录下，命名为 `test_sample.pdf`）。可创建一个简单文本文档导出为 PDF，或使用任何已有论文 PDF。`parse_pdf` 不依赖 MongoDB，故可独立测试。
 
-#### 4.2 测试 `store_document`、`list_documents`、`read_document`
+#### 5.2 测试 `store_document`、`list_documents`、`read_document`
 
 这些函数操作 MongoDB，测试前需确保 MongoDB 服务已启动（见[开始之前](./00-开始指南.md)）。测试思路：先用 `store_document` 写入一条记录（含完整文本），再用 `list_documents` / `read_document` 读回验证。以下是**教学示例**：
 
@@ -614,7 +733,7 @@ uv run pytest tests/test_documents.py -v
 
 ---
 
-## 步骤 5：集成验证
+## 步骤 6：集成验证
 
 所有函数实现完毕后，执行一次完整的端到端流程验证（在 `backend/` 目录下）：
 
@@ -655,9 +774,10 @@ print(doc['text'][:200])
 
 以下条件全部满足，本模块才算完成：
 
-- [ ] `backend/pyproject.toml` 存在，包名为 `agentic-search`，包含 `pymupdf`、`pydantic-settings`、`pymongo`、`pytest`（dev）
+- [ ] `backend/pyproject.toml` 存在，包名为 `agentic-search`，包含 `pymupdf`、`pydantic-settings`、`pymongo`、`langchain`、`pytest`（dev）
 - [ ] `backend/src/agentic_search/configs/config.py` 存在，`settings` 含 `mongo_uri`、`mongo_db`，可从 `.env` 读取配置
 - [ ] `backend/src/agentic_search/services/documents.py` 包含 `parse_pdf`、`store_document`、`list_documents`、`read_document`
+- [ ] `backend/src/agentic_search/agents/tools.py` 包含四个 `@tool` 工具（`list_papers`/`read_paper`/`search_papers`/`extract_abstract`）
 - [ ] MongoDB 服务已启动（`localhost:27017`），MongoDB Compass 可连接查看 `agentic_search`
 - [ ] 可编辑安装成功：
 
@@ -740,6 +860,6 @@ file_path = Path("论文.pdf")               # parse_pdf 接收文件路径，�
 
 ## 下一步
 
-本模块完成了后端包的地基：包化布局、配置层、文档服务。在[模块 2：LangGraph Agent](./02-LangGraph-Agent.md) 中，Agent 的论文导航工具（`list_papers`/`read_paper`/`search_papers`/`extract_abstract`）将调用本模块的 `read_document`、`list_documents` 等函数，按行号按需读取本模块产出的完整文本；同时 Agent 会用到 `configs/config.py` 中的 LLM 配置，并通过 FastAPI 把整个工作流暴露为 HTTP API。
+本模块完成了后端包的全部底层能力：包化布局、配置层、文档服务、Agent 导航工具。在[模块 2：LangGraph Agent](./02-LangGraph-Agent.md) 中，Agent 将用 `build_graph()` 把本模块产出的四个工具组装成一个 ReAct 循环，并通过 FastAPI 把它暴露为 HTTP API。
 
 按照学习路径（模块 1 → 模块 2 → 模块 3 → 模块 4），接下来进入[模块 2：LangGraph Agent](./02-LangGraph-Agent.md)，在文档能力之上构建「LLM 自主调用论文导航工具、迭代搜索与回答」的 Agent 工作流。
