@@ -43,7 +43,7 @@
 
 **分层架构（Layered Architecture）** 的核心是「关注点分离」：HTTP 层只管收发请求，不写业务逻辑；agent 层只管 ReAct 编排，不关心 HTTP 细节；工具层只管读写 MongoDB，不知道谁在调用它。
 
-**CORS（跨源资源共享）** 是浏览器安全机制：前端（`localhost:3000`）与后端（`localhost:8000`）端口不同时，浏览器默认拦截跨端口请求，后端需用 CORS 中间件显式放行。
+**CORS（跨源资源共享）** 是浏览器的安全机制。浏览器有**同源策略**：只允许网页向「同协议 + 同域名 + 同端口」的地址发请求——三者完全一致才算「同源」。本项目前端（`localhost:3000`）与后端（`localhost:8000`）端口不同，属于**跨源**，浏览器默认拦截。CORS 的解法是后端在响应头加入 `Access-Control-Allow-Origin`，显式告诉浏览器「允许这个外部源访问」。第 9 步用 FastAPI 的 `CORSMiddleware` 完成这一配置。
 
 **装饰器（decorator）** 是 Python 的语法机制：用 `@` 给函数或类「套一层额外逻辑」而不改写其本体，本质是接收函数、返回函数的高阶函数，`@` 只是语法糖。本模块在第 5 步手写一个**自定义装饰器** `@retry`（LLM 调用失败自动重试），第 8 步发现 FastAPI 的 `@router.post` 是库提供的装饰器；[模块 1](./01-Python文档工具.md) 的 LangChain `@tool` 与模块 4 的标准库 `@dataclass` 也是装饰器——同一个机制，既能挂路由、注册工具，也能加重试。
 
@@ -642,7 +642,9 @@ app.include_router(router)
 
 **为什么需要 CORS？**
 
-本项目前端与后端是两个独立服务（端口不同）。浏览器有同源策略：默认禁止网页向不同端口发请求。`CORSMiddleware` 会在响应头中加入 `Access-Control-Allow-Origin`，告诉浏览器"这个后端允许被前端访问"。没有它，前端的 `fetch` 会被浏览器拦截并报 CORS 错误。
+本项目前端与后端是两个独立服务（端口不同）。浏览器的同源策略默认禁止网页向不同端口发请求。`CORSMiddleware` 在响应头中加入 `Access-Control-Allow-Origin`，告诉浏览器「这个后端允许被前端访问」。没有它，前端的 `fetch` 会被浏览器拦截并报 CORS 错误。
+
+对于 `POST` 等非简单请求，浏览器会先发一个 **预检请求（preflight）**：用 `OPTIONS` 方法询问后端「你允许哪些源、哪些方法、哪些请求头？」。`CORSMiddleware` 会自动应答这个 `OPTIONS` 请求——这就是代码里 `allow_origins`/`allow_methods`/`allow_headers` 三个参数的用途。浏览器收到预检通过后，才真正发出业务请求。
 
 **设计说明——为什么 `main.py` 这么短？**
 
