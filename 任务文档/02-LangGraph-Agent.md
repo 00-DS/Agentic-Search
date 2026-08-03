@@ -666,14 +666,14 @@ async def ingest(file: UploadFile = File(...)):
         tmp_path = tmp.name
     try:
         # ③ 纯提取：parse_pdf 只负责 pymupdf 提取纯文本，返回字符串
-        markdown = parse_pdf(tmp_path)
+        text = parse_pdf(tmp_path)
     finally:
         os.unlink(tmp_path)  # 临时文件用完即删
 
     # ④ 持久化：store_document 写入 MongoDB documents 集合
-    #    {doc_id, filename, markdown, uploaded_at}
+    #    {doc_id, filename, text, uploaded_at}
     doc_id = Path(file.filename).stem
-    store_document(doc_id, file.filename, markdown)
+    store_document(doc_id, file.filename, text)
 
     return IngestResponse(doc_id=doc_id, filename=file.filename)
 ```
