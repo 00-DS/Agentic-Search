@@ -558,16 +558,16 @@ def _get_doc_text(doc_id: str) -> str:
 
 @tool
 def list_papers() -> list[dict]:
-    """列出语料库中所有论文。返回 [{doc_id, filename}]，不带正文。
-    对标 omp 的 glob：只列有哪些文件，不返回内容——判断相关性靠后续自主探索。
+    """列出语料库中所有可用论文。返回 [{doc_id, filename}]，不含正文。
+    先用本工具了解语料库里有哪些论文，再用 read_paper 或 search_papers 深入某一篇。
     """
     return list_documents()
 
 
 @tool
 def read_paper(doc_id: str, start_line: int = 1, end_line: int = 50) -> str:
-    """读取指定论文的指定行号范围。返回原始文本行。
-    对标 omp 的 read :50-100：按行号取片段，而不是返回全文。
+    """读取指定论文从 start_line 到 end_line 的原始文本（行号从 1 开始，含两端）。
+    默认返回前 50 行。搜索或摘要给出某个行号后，用本工具读取该位置附近的完整上下文。
     """
     text = _get_doc_text(doc_id)
     lines = text.split("\n")
@@ -577,9 +577,10 @@ def read_paper(doc_id: str, start_line: int = 1, end_line: int = 50) -> str:
 
 @tool
 def search_papers(pattern: str, doc_id: str = "") -> list[dict]:
-    """跨语料库（或指定论文）用正则搜索内容。返回 [{doc_id, line_number, line}]。
-    对标 omp 的 grep：参数是正则 pattern（不是语义 query），命中后 agent 通常再调
-    read_paper 按行号深入——搜索只给位置和片段，不给全文。
+    """用正则表达式搜索论文内容，返回每个命中行 [{doc_id, line_number, line}]。
+    pattern 是 Python 正则（如 'transformer|attention'），不是自然语言问题。
+    可选 doc_id 限定单篇搜索；省略则跨全部论文搜索。
+    拿到命中行号后，用 read_paper 读取该位置附近的上下文。
     """
     regex = re.compile(pattern)
     hits = []
@@ -595,8 +596,8 @@ def search_papers(pattern: str, doc_id: str = "") -> list[dict]:
 
 @tool
 def extract_abstract(doc_id: str) -> str:
-    """提取论文的 Abstract 段落。agent 按需调用，快速判断论文是否相关。
-    对标 omp 的 summarizeCode()：读取时的概览便利，不是上传预处理。
+    """提取论文的 Abstract 段落，用于快速判断论文是否与问题相关。
+    找不到独立 Abstract 段落时返回提示信息。
     """
     text = _get_doc_text(doc_id)
     lines = text.split("\n")
