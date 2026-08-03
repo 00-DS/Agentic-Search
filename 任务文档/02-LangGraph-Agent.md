@@ -410,7 +410,7 @@ def read_paper(doc_id: str, start_line: int = 1, end_line: int = 50) -> str:
 
 @tool
 def search_papers(pattern: str, doc_id: str = "") -> list[dict]:
-    """跨语料库（或指定论文）用正则搜索内容。返回 [{doc_id, line_number, line, snippet}]。
+    """跨语料库（或指定论文）用正则搜索内容。返回 [{doc_id, line_number, line}]。
     对标 omp 的 grep：参数是正则 pattern（不是语义 query），命中后 agent 通常再调
     read_paper 按行号深入——搜索只给位置和片段，不给全文。
     """
