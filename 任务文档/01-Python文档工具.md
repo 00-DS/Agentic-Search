@@ -78,25 +78,28 @@ parse_pdf()              └── agentic_search/
 
 ### 装饰器（decorator）与 LangChain `@tool`
 
-**装饰器** 是 Python 的语法机制：在不改写函数体的前提下，给函数「套一层额外逻辑」。`@` 只是语法糖——`@装饰器名` 写在 `def` 上方，等价于 `函数 = 装饰器名(函数)`。装饰器接收一个函数、返回一个函数（通常是包了额外逻辑的同名函数）：
+**装饰器** 是 Python 的语法机制：用 `@` 给函数「套一层额外逻辑」而不改写其本体。`@装饰器名` 写在 `def` 上方，等价于 `函数 = 装饰器名(函数)`——装饰器接收原函数、返回一个包装后的新函数。
+
+LangChain 的 `@tool` 是本项目遇到的第一个装饰器。它读取函数的**类型注解**和 **docstring**，自动生成一份工具 schema（名字、参数描述、用途），让 LLM 能「看到」这个工具。函数体一行没改，但装饰后它不再是普通函数，而是一个带 `.name`、`.description`、`.args_schema` 属性的工具对象：
 
 ```python
-# 下面两种写法完全等价：
-@my_decorator        # ① 语法糖写法
-def hello():
-    print("hi")
+from langchain.tools import tool
 
-# ② 手动写法（语法糖展开后就是这个）
-def hello():
-    print("hi")
-hello = my_decorator(hello)     # 把 hello 传给装饰器，拿回包装后的新函数
+
+@tool
+def multiply(a: int, b: int) -> int:
+    """将两个整数相乘并返回结果。"""
+    return a * b
+
+print(multiply.name)          # multiply（取自函数名）
+print(multiply.description)   # 将两个整数相乘并返回结果。（取自 docstring）
+print(multiply.args_schema.model_json_schema())
+# {'properties': {'a': {'type': 'integer'}, 'b': {'type': 'integer'}}, ...}（取自类型注解）
 ```
 
-关键认知：`hello` 这个名字在装饰后指向的不再是原始函数，而是装饰器返回的包装函数——但调用方式不变（`hello()` 照常执行），只是执行时多了装饰器附加的逻辑。
+这三项信息——名字、描述、参数 schema——就是 LLM 决定「要不要调这个工具、传什么参数」的全部依据。本模块用 `@tool` 把四个普通函数（`list_papers`/`read_paper`/`search_papers`/`extract_abstract`）注册成 agent 工具。
 
-LangChain 的 `@tool` 正是这样一个装饰器。它接收下面的函数，从函数的**类型注解**（参数名、参数类型、返回类型）和 **docstring**（函数文档字符串）中自动提取信息，生成一份 LLM 能读懂的工具 schema（工具名、参数描述、用途）。函数体一行没改，但它已变成一个「LLM 可调用的工具」。本模块用它把四个普通函数（`list_papers`/`read_paper`/`search_papers`/`extract_abstract`）注册成 agent 工具。
-
-> 装饰器的**主体讲解**在[模块 2](./02-LangGraph-Agent.md)：那里会手写一个自定义装饰器 `@retry`（从零理解 `@` 背后的高阶函数机制）。此外，模块 2 的 `@router.post`（FastAPI 路由注册）和模块 4 的标准库 `@dataclass` 也都是装饰器——同一个机制，不同的库。[模块 1](./01-Python文档工具.md) 这里先用起来，模块 2 再深入原理。
+> 装饰器的**主体讲解**在[模块 2](./02-LangGraph-Agent.md)：那里会手写一个自定义装饰器 `@retry`（从零理解 `@` 背后的高阶函数机制）。此外，模块 2 的 `@router.post`（FastAPI 路由注册）和模块 4 的标准库 `@dataclass` 也都是装饰器——同一个机制，不同的库。本模块先用起来，模块 2 再深入原理。
 
 ---
 
