@@ -76,9 +76,27 @@ parse_pdf()              └── agentic_search/
 
 **pytest** 是 Python 的测试框架。核心规则有三条：测试文件以 `test_` 开头（如 `test_documents.py`）、测试函数以 `test_` 开头（如 `test_parse_pdf`）、用 Python 原生的 `assert` 语句做断言。运行：`uv run pytest tests/ -v`。
 
-### LangChain `@tool` 装饰器
+### 装饰器（decorator）与 LangChain `@tool`
 
-**装饰器（decorator）** 是「在不改写函数体的前提下，给函数套一层额外逻辑」的语法，`@` 只是语法糖。LangChain 的 `@tool` 装饰器从函数的类型注解和 docstring 自动生成工具 schema，让 LLM 能「看到」这个工具的名字、参数、用途。本模块用它把四个普通函数（`list_papers`/`read_paper`/`search_papers`/`extract_abstract`）注册成 agent 可调用的工具。[模块 2](./02-LangGraph-Agent.md) 还会用 `@retry`（自定义重试）和 `@router.post`（FastAPI 路由）两次「点亮」同一个装饰器机制。
+**装饰器** 是 Python 的语法机制：在不改写函数体的前提下，给函数「套一层额外逻辑」。`@` 只是语法糖——`@装饰器名` 写在 `def` 上方，等价于 `函数 = 装饰器名(函数)`。装饰器接收一个函数、返回一个函数（通常是包了额外逻辑的同名函数）：
+
+```python
+# 下面两种写法完全等价：
+@my_decorator        # ① 语法糖写法
+def hello():
+    print("hi")
+
+# ② 手动写法（语法糖展开后就是这个）
+def hello():
+    print("hi")
+hello = my_decorator(hello)     # 把 hello 传给装饰器，拿回包装后的新函数
+```
+
+关键认知：`hello` 这个名字在装饰后指向的不再是原始函数，而是装饰器返回的包装函数——但调用方式不变（`hello()` 照常执行），只是执行时多了装饰器附加的逻辑。
+
+LangChain 的 `@tool` 正是这样一个装饰器。它接收下面的函数，从函数的**类型注解**（参数名、参数类型、返回类型）和 **docstring**（函数文档字符串）中自动提取信息，生成一份 LLM 能读懂的工具 schema（工具名、参数描述、用途）。函数体一行没改，但它已变成一个「LLM 可调用的工具」。本模块用它把四个普通函数（`list_papers`/`read_paper`/`search_papers`/`extract_abstract`）注册成 agent 工具。
+
+> 装饰器的**主体讲解**在[模块 2](./02-LangGraph-Agent.md)：那里会手写一个自定义装饰器 `@retry`（从零理解 `@` 背后的高阶函数机制）。此外，模块 2 的 `@router.post`（FastAPI 路由注册）和模块 4 的标准库 `@dataclass` 也都是装饰器——同一个机制，不同的库。[模块 1](./01-Python文档工具.md) 这里先用起来，模块 2 再深入原理。
 
 ---
 
@@ -514,9 +532,7 @@ if docs:
 
 ## 步骤 4：`agents/tools.py` — 论文导航工具集
 
-Agent 的「手和眼」——四个工具，对标 omp 探索代码库的 `glob`/`read`/`grep`/`summarize`。用 LangChain 的 `@tool` 装饰器声明：装饰器会从函数的**类型注解 + docstring** 自动生成工具 schema，告诉 LLM「这个工具叫什么、接收什么参数、干什么」。
-
-> **`@tool` 是什么？** 它是装饰器（decorator）的一种——`@` 语法糖给函数套一层额外逻辑。`@tool` 做的事是：接收下面的函数，从它的参数类型注解和 docstring 提取出工具名、参数描述、用途说明，自动生成一份 LLM 能读懂的 schema。函数体一行没改，但它已经变成了一个「LLM 可以调用的工具」。后续[模块 2](./02-LangGraph-Agent.md) 还会两次「点亮」同一个装饰器机制：`@retry`（自定义重试装饰器）和 `@router.post`（FastAPI 路由注册），以及模块 4 的标准库 `@dataclass`——都是装饰器，只是来自不同的库。
+Agent 的「手和眼」——四个工具，对标 omp 探索代码库的 `glob`/`read`/`grep`/`summarize`。用 LangChain 的 `@tool` 装饰器声明（装饰器原理见上方[技术概念](#装饰器decorator与-langchain-tool)）：`@tool` 从函数的类型注解和 docstring 自动生成工具 schema，函数体一行没改，就变成了 LLM 可调用的工具。
 
 新建 `agents/tools.py`：
 
