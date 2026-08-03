@@ -737,7 +737,7 @@ def test_read_document_not_found():
 
 讲解要点：
 
-- `test_store_and_read_document` 把「写入」与「读取」成对验证——写入什么、读回应一致。这是数据库操作测试的基本范式：先写后读，断言数据未在往返中丢失。
+- `test_store_and_read_document` 用硬编码字符串 `"正文内容"` 而非 `parse_pdf` 的真实输出，目的是**隔离被测逻辑**：这个测试只验证「写入 → 读回 → 数据没丢」这条链路，不引入 `parse_pdf` 的不确定性。`parse_pdf` 有自己的独立测试（5.1 节）；各函数各测各的，互不耦合。
 - `list_documents` 用投影只取 `doc_id` 与 `filename`，故断言这两个字段存在即可（`text` 正文不会出现在列表结果中）。
 - MongoDB 测试会在数据库中留下测试记录。教学阶段可用 MongoDB Compass 手动清理，或为每个测试生成随机 `doc_id` 避免相互干扰。
 
