@@ -334,7 +334,7 @@ class Settings(BaseSettings):
     llm_model: str = "deepseek-v4-flash"
 
     # MongoDB 配置（本模块文档服务 + 模块 4 记忆系统使用）
-    mongo_uri: str = "mongodb://localhost:27017"
+    mongo_url: str = "mongodb://localhost:27017"
     mongo_db: str = "agentic_search"
 
 
@@ -351,7 +351,7 @@ settings = Settings()
 **验证**（在 `backend/` 目录下执行）：
 
 ```bash
-uv run python -c "from agentic_search.configs.config import settings; print(settings.mongo_uri, settings.mongo_db, settings.llm_model)"
+uv run python -c "from agentic_search.configs.config import settings; print(settings.mongo_url, settings.mongo_db, settings.llm_model)"
 ```
 
 预期输出：`mongodb://localhost:27017 agentic_search deepseek-v4-flash`（或 `.env` 中填写的值）。若你修改了 `.env`，输出会随之变化——这正是配置层的目的。
@@ -459,7 +459,7 @@ from agentic_search.configs.config import settings
 
 
 # 模块级连接：MongoDB 连接建立后可复用，不必每次操作都新建客户端
-_client = MongoClient(settings.mongo_uri)
+_client = MongoClient(settings.mongo_url)
 _db = _client[settings.mongo_db]
 _documents_collection = _db["documents"]
 
@@ -478,7 +478,7 @@ def store_document(doc_id: str, filename: str, text: str) -> None:
 
 讲解要点：
 
-- **模块级连接**：`MongoClient(settings.mongo_uri)` 在模块被 import 时建立一次连接。PyMongo 的客户端内置连接池，多个 `insert_one` / `find_one` 复用同一连接，无需手动管理。
+- **模块级连接**：`MongoClient(settings.mongo_url)` 在模块被 import 时建立一次连接。PyMongo 的客户端内置连接池，多个 `insert_one` / `find_one` 复用同一连接，无需手动管理。
 - **`insert_one`**：向集合插入一条记录。若 `documents` 集合尚不存在，MongoDB 会在首次写入时自动创建——无需提前建表。
 - **`uploaded_at`**：记录上传时间。`datetime.now(timezone.utc)` 用带时区的 UTC 时间，避免不同服务器时区不一致导致的排序错误。
 - **schema：`{doc_id, filename, text, uploaded_at}`**：扁平文档，`text` 是完整纯文本。agent 经 `read_paper(doc_id, start_line, end_line)` 按行号取片段，或经 `search_papers(pattern, doc_id)` 正则定位。
@@ -796,7 +796,7 @@ print(doc['text'][:200])
 以下条件全部满足，本模块才算完成：
 
 - [ ] `backend/pyproject.toml` 存在，包名为 `agentic-search`，包含 `pymupdf`、`pydantic-settings`、`pymongo`、`langchain`、`pytest`（dev）
-- [ ] `backend/src/agentic_search/configs/config.py` 存在，`settings` 含 `mongo_uri`、`mongo_db`，可从 `.env` 读取配置
+- [ ] `backend/src/agentic_search/configs/config.py` 存在，`settings` 含 `mongo_url`、`mongo_db`，可从 `.env` 读取配置
 - [ ] `backend/src/agentic_search/services/documents.py` 包含 `parse_pdf`、`store_document`、`list_documents`、`read_document`
 - [ ] `backend/src/agentic_search/agents/tools.py` 包含四个 `@tool` 工具（`list_papers`/`read_paper`/`search_papers`/`extract_abstract`）
 - [ ] MongoDB 服务已启动（`localhost:27017`），MongoDB Compass 可连接查看 `agentic_search`
@@ -805,7 +805,7 @@ print(doc['text'][:200])
 ```bash
 cd backend
 uv sync
-uv run python -c "from agentic_search.services.documents import parse_pdf; from agentic_search.configs.config import settings; print(settings.mongo_uri); print('包化 import 成功')"
+uv run python -c "from agentic_search.services.documents import parse_pdf; from agentic_search.configs.config import settings; print(settings.mongo_url); print('包化 import 成功')"
 ```
 
 - [ ] 所有测试通过（全绿）：

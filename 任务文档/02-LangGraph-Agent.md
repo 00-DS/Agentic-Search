@@ -242,11 +242,11 @@ uv run python hello_agent.py
 
 ## 第 3 步：补充 Agent 配置
 
-`configs/config.py` 的基础已在[模块 1](./01-Python文档工具.md) 创建（`llm_model`、`mongo_uri`、`mongo_db`）。配置层只此一份、所有模块共享。Agent 调用 DeepSeek 还需要 API Key、接口地址与超时——这些是 Agent 专用字段，在此**追加到同一个 `Settings` 类**，不重写已有定义。
+`configs/config.py` 的基础已在[模块 1](./01-Python文档工具.md) 创建（`llm_model`、`mongo_url`、`mongo_db`）。配置层只此一份、所有模块共享。Agent 调用 DeepSeek 还需要 API Key、接口地址与超时——这些是 Agent 专用字段，在此**追加到同一个 `Settings` 类**，不重写已有定义。
 
 ```python
 # configs/config.py —— 在模块 1 的 Settings 类中追加以下字段
-# （llm_model / mongo_uri / mongo_db 已在模块 1 定义，不重复）
+# （llm_model / mongo_url / mongo_db 已在模块 1 定义，不重复）
 
     # Agent 调用 DeepSeek 专用
     llm_api_key: str = ""                              # API 密钥，写入 .env，勿提交到 Git

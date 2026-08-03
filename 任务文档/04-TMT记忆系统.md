@@ -208,13 +208,13 @@ def consolidate_l2(l1_memories: list[Memory]) -> Memory:
 from pymongo import MongoClient
 from agentic_search.configs.config import settings
 
-client = MongoClient(settings.mongo_uri)        # 连接 mongodb://localhost:27017
+client = MongoClient(settings.mongo_url)        # 连接 mongodb://localhost:27017
 db = client[settings.mongo_db]                  # 选中 agentic_search
 memories_collection = db["memories"]            # 记忆集合
 ```
 
 **逐段讲解：**
-- `MongoClient(settings.mongo_uri)`：用 `config.py` 中的 `mongo_uri`（默认 `mongodb://localhost:27017`）建立连接。PyMongo 内部维护连接池，无需手动开关连接。
+- `MongoClient(settings.mongo_url)`：用 `config.py` 中的 `mongo_url`（默认 `mongodb://localhost:27017`）建立连接。PyMongo 内部维护连接池，无需手动开关连接。
 - `db["memories"]`：按名取集合；集合不存在时，首次写入会自动创建。
 
 #### 2.4.2 写入单条：`save_memory(memory)`（`insert_one`）
