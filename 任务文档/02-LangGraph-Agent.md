@@ -176,25 +176,21 @@ uv add langgraph langchain langchain-openai fastapi 'uvicorn[standard]' pydantic
 
 ```python
 # 教学示例：最小 ReAct agent 图（桩 LLM，验证循环结构）
-from typing import Annotated, TypedDict
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langgraph.graph import StateGraph, START, END
-from langgraph.graph.message import add_messages
+from langgraph.graph import StateGraph, START, END, MessagesState   # ← 直接用预置基类
 
 
-# ① 状态：messages 用 add_messages reducer 自动累加（不覆盖）
-class HelloState(TypedDict):
-    messages: Annotated[list, add_messages]
-
+# ① 状态：MessagesState 自带 messages 字段（带 add_messages reducer），无需自己写 TypedDict
+#    （第 4 步会讲 MessagesState 内部长什么样；这里先用起来，体会它开箱即用）
 
 # ② 一个 dummy 工具节点（真实版用 ToolNode 自动调度多个工具，见第 6、7 步）
-def get_time(state: HelloState):
+def get_time(state: MessagesState):
     return {"messages": [ToolMessage(content="现在是 14:00", tool_call_id="call_1")]}
 
 
 # ③ llm_call：桩函数，模拟「第一轮调工具、第二轮直接答」的决策
 _step = 0
-def llm_call(state: HelloState):
+def llm_call(state: MessagesState):
     global _step
     _step += 1
     if _step == 1:   # 第一轮：决定调工具
@@ -205,13 +201,13 @@ def llm_call(state: HelloState):
 
 
 # ④ 条件边：看最后一条消息有没有 tool_calls，决定去 tools 还是 END
-def should_continue(state: HelloState) -> str:
+def should_continue(state: MessagesState) -> str:
     last = state["messages"][-1]
     return "tools" if getattr(last, "tool_calls", None) else END
 
 
 # ⑤ 组装图：注册节点 → 入口边 → 条件边 → 工具回流
-builder = StateGraph(HelloState)
+builder = StateGraph(MessagesState)
 builder.add_node("llm_call", llm_call)
 builder.add_node("tools", get_time)
 builder.add_edge(START, "llm_call")
@@ -282,39 +278,33 @@ uv run python -c "from agentic_search.configs.config import settings; print(sett
 
 ---
 
-## 第 4 步：定义 AgentState
+## 第 4 步：直接用 `MessagesState` 标准基类
 
-创建 `agents/graph.py`。首先定义状态——ReAct 循环在节点间传递的数据容器。
+创建 `agents/graph.py`。ReAct agent 的状态就是**对话历史**（`messages` 列表）——LangGraph 提供了预置基类 `MessagesState`，无需自己写 TypedDict：
 
 ```python
-# agents/graph.py 顶部 —— 教学示例
-from typing import Annotated, TypedDict
-from langchain_core.messages import AnyMessage
-from langgraph.graph.message import add_messages
-
-
-class AgentState(TypedDict):
-    """ReAct agent 在节点间传递的状态。"""
-    messages: Annotated[list[AnyMessage], add_messages]   # 对话历史（含工具调用与结果），用 reducer 累加
-    question: str                                          # 用户原始提问（API 层填入，便于 SSE 提取最终答案）
+# agents/graph.py 顶部 —— 直接用标准基类
+from langgraph.graph import MessagesState   # 预置状态：messages 字段已带 add_messages reducer
 ```
 
-**设计说明——为什么 `messages` 要配 `add_messages` reducer？**
+**`MessagesState` 是什么？** 它是 LangGraph 预置的状态基类，内部就一行定义：
+```python
+# LangGraph 源码 langgraph/graph/message.py 里的 MessagesState（无需自己写，直接用）
+class MessagesState(TypedDict):
+    messages: Annotated[list[AnyMessage], add_messages]
+```
+`messages` 字段标注 `Annotated[list[AnyMessage], add_messages]`，表示节点返回的 messages 会**追加**到历史而不是覆盖——这正是 ReAct 循环的关键：`tool_node` 产出的 `ToolMessage` 必须接在之前的对话之后，下一轮 `llm_call` 才能看到完整脉络。LangGraph 把这行封装成 `MessagesState`，让你直接拿来用。
 
-LangGraph 默认按字段做「覆盖」合并——节点返回 `{"messages": [...]}` 会整段替换历史。但 ReAct 循环要求工具结果**追加**到历史：`tool_node` 产出的 `ToolMessage` 必须接在之前的对话之后，下一轮 `llm_call` 才能看到完整脉络。`Annotated[list[AnyMessage], add_messages]` 告诉 LangGraph「这个字段用追加而非覆盖」。`MessagesState` 是 LangGraph 预置的、已带该 reducer 的状态基类；这里手写等价定义，是为了看清原理。
-
-**`question` 为什么单独留一个字段？** `messages` 已经包含用户提问，理论上可从历史里取。单独留 `question` 是为了 API 层（第 9 步）方便提取最终答案、做 SSE 分段——属于便利字段，不是循环运转的必需。
-
-**部分更新（partial update）保留**：每个节点只返回自己负责的字段（`llm_call` 只动 `messages`，不碰 `question`），LangGraph 自动合并——这与第 2 步演示的一致。
+**为什么不再自定义 `question` 字段？** 用户提问就是 `messages` 列表的第一条 `HumanMessage`（`messages[0].content` 就是问题），最终答案就是最后一条 AI 消息（`messages[-1].content` 就是答案）。单独留 `question` 字段会重复存储同一信息——标准做法是只靠 `messages`，API 层直接从 `messages[0]` / `messages[-1]` 取。
 
 **验证**：
 
 ```bash
 cd backend
-uv run python -c "from agentic_search.agents.graph import AgentState; print(AgentState.__annotations__)"
+uv run python -c "from langgraph.graph import MessagesState; print(MessagesState.__annotations__)"
 ```
 
-看到 `messages` 与 `question` 两个字段即正确。
+看到 `messages` 字段（带 `add_messages` reducer）即正确。
 
 ---
 
@@ -498,18 +488,18 @@ def build_graph():
     # ③ llm_call：LLM 决策节点。第 5 步的 @retry 包在这里——
     #    重试整个含 bind_tools 的 .invoke()，而非包在 init_chat_model 工厂上（工厂只建一次，无需重试）
     @retry(max_attempts=3)
-    def llm_call(state: AgentState):
+    def llm_call(state: MessagesState):
         response = llm_with_tools.invoke(state["messages"])
         return {"messages": [response]}
 
     # ④ 条件边：看最后一条消息有没有 tool_calls——
     #    有就执行工具，没有（LLM 认为「读够了」）就结束
-    def should_continue(state: AgentState):
+    def should_continue(state: MessagesState):
         last = state["messages"][-1]
         return "tool_node" if getattr(last, "tool_calls", None) else END
 
     # ⑤ 组装：注册节点 → 入口边 → 条件边 → 工具回流
-    builder = StateGraph(AgentState)
+    builder = StateGraph(MessagesState)
     builder.add_node("llm_call", llm_call)
     builder.add_node("tool_node", ToolNode(tools))
     builder.add_edge(START, "llm_call")
@@ -630,7 +620,6 @@ async def query(req: QueryRequest):
         # （llm_call ⇄ tool_node 多轮），最终把答案写在 messages 的最后一条
         result = graph.invoke({
             "messages": [HumanMessage(content=req.question)],
-            "question": req.question,   # 填入 AgentState 的 question 字段，便于日志/调试
         })
         answer = result["messages"][-1].content
 

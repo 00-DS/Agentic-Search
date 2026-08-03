@@ -373,7 +373,7 @@ __start__ → retrieve_memory → [ llm_call ⇄ tool_node ] → store_memory �
 **store_memory 节点**（循环**结束、`__end__` 前**）：
 agent 给出最终答案、循环终止后，把本轮对话（用户问题 + agent 最终回答）传给 `extract_l1` 提取原子事实，存入 MongoDB `memories` 集合。此节点不修改 `messages`，只产生副作用（写库）。
 
-模块 2 的 `AgentState`（带 `messages`、`question` 两个字段的 TypedDict）需再加一个 `session_id` 字段，供 `store_memory` 给提取出的 L1 事实打上会话标签（L2 幂等也靠它定位）。记忆本身不再单独占字段——它们直接混入 `messages`，对 agent 透明。
+模块 2 的 agent 状态用 `MessagesState`（LangGraph 预置基类，只含 `messages` 字段）。挂记忆节点时，需扩展出一个带 `session_id` 的子类，供 `store_memory` 给提取出的 L1 事实打上会话标签（L2 幂等也靠它定位）。标准做法是继承：`class MemoryState(MessagesState): session_id: str`——`messages` 字段自动继承，只加自己的字段。记忆本身不再单独占字段——它们直接混入 `messages`，对 agent 透明。
 
 > 注意：L1 提取在每轮对话后**自动**触发（`store_memory` 节点内），而 L2 整合由**手动按钮**触发。两者触发时机不同——L1 是细粒度的实时记录，L2 是粗粒度的人为压缩。
 
