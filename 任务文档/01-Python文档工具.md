@@ -11,10 +11,10 @@
 1. 理解 **Python 包化布局（src layout）**，说明 `backend/src/agentic_search/` 这种结构与单文件 `.py` 的区别，以及工业项目采用它的原因
 2. 使用 **uv** 创建包化项目，通过 `pyproject.toml` 声明包名与依赖，并用 `uv sync` / `pip install -e .` 完成可编辑安装
 3. 使用 **pydantic-settings** 编写配置层 `configs/config.py`，从 `.env` 读取 LLM 模型名、MongoDB 连接配置、超时，避免在代码中硬编码
-4. 使用 **pymupdf + PyMongo** 在 `services/documents.py` 中实现 `parse_pdf`（结构化提取，切分章节）、`list_documents`、`read_document`、`read_section` 四个文档工具函数，把按章节切分的文本存入 MongoDB
+4. 使用 **pymupdf + PyMongo** 在 `services/documents.py` 中实现 `parse_pdf`（PDF 转纯文本）、`store_document`、`list_documents`、`read_document` 四个文档工具函数，把完整文本存入 MongoDB
 5. 使用 **pytest** 为文档工具编写并运行单元测试
 
-本模块的产出是后端包的「地基」部分：包化骨架（`pyproject.toml` + `src/agentic_search/`）、配置层（`configs/config.py`）与文档服务（`services/documents.py`），以及对应的测试文件 `tests/test_documents.py`。这些函数将在[模块 2：LangGraph Agent](./02-LangGraph-Agent.md) 中被 Agent 的论文导航工具（`read_section`/`search_sections` 等）调用——Agent 按需读取本模块产出的章节文本片段，自主决定读哪篇、读哪段，而不是一次性把全文塞进上下文。
+本模块的产出是后端包的「地基」部分：包化骨架（`pyproject.toml` + `src/agentic_search/`）、配置层（`configs/config.py`）与文档服务（`services/documents.py`），以及对应的测试文件 `tests/test_documents.py`。这些函数将在[模块 2：LangGraph Agent](./02-LangGraph-Agent.md) 中被 Agent 的论文导航工具（`read_paper`/`search_papers` 等）调用——Agent 按行号按需读取本模块产出的完整文本片段，自主决定读哪篇、读哪段，而不是一次性把全文塞进上下文。
 
 ---
 
@@ -49,19 +49,17 @@ parse_pdf()              └── agentic_search/
 
 ### pymupdf
 
-**pymupdf** 是基于 MuPDF 内核的轻量 PDF 处理库。它通过 `page.get_text("dict")` 从 PDF 文本层提取**带版式结构的信息**——单一 wheel、无模型下载、无 GPU 依赖、即装即用。
+**pymupdf** 是基于 MuPDF 内核的轻量 PDF 处理库。它通过 `page.get_text("text")` 从 PDF 文本层提取纯文本——单一 wheel、无模型下载、无 GPU 依赖、即装即用。
 
-**`get_text("dict")` 返回什么？** 一个四层嵌套结构：`page → blocks → lines → spans`。每个 **span**（一段字号、字体完全相同的连续文字）携带 `size`（字号）、`font`（字体名）、`flags`（加粗/斜体）、`color`、`bbox` 等属性。不带结构的 `"text"` 模式只是把所有 span 的文字拼成一段平铺纯文本；`"dict"` 模式额外带回了「每个字多大、什么字体」的版式信息——这正是切分章节的关键线索。
+**`get_text("text")` 返回什么？** 每一页的纯文本字符串，按 PDF 的排版顺序拼接。项目只需把所有页的文本拼成一个完整字符串，存入 MongoDB。不做任何切分——切分是 agent 的职责，它用正则搜索定位行号、按行号读取片段，完全自主。
 
-**标题启发式（heading heuristic）。** 这是真实工程里切分论文章节的常见做法：正文通常用统一字号排版，标题用更大字号。算法只需三步——遍历所有 span 收集字号 → 算出正文字号（中位数）→ 把字号明显大于正文的 span 判定为标题，在标题处把全文切成 `sections`（章节）。本项目用这套启发式把论文切成章节，供 Agent 按需取片段（实现见步骤 3.1 的 `_extract_sections`）。
-
-**边界处理**：当一篇短论文没有任何 span 被判定为标题（如纯正文、或扫描转文本的论文）时，启发式返回空列表。此时 `parse_pdf` 走兜底分支——把整篇作为一个 `section_id=0`、`title="(全文)"`、`level=0` 的兜底 section，保证下游 Agent 永远拿到非空的章节列表。
+**为什么不做结构化切分？** 这对齐 omp 的文件读取模型：文件以原始形态存在，agent 用 `grep`（正则搜索行号）+ `read :50-100`（按行号取片段）自主探索，不在入库时做任何预处理。预切分会破坏跨段上下文、切分位置可能出错，反而降低 agent 的探索效果。
 
 ### MongoDB 与 PyMongo
 
-**MongoDB** 是面向文档的 NoSQL 数据库，把数据存为 **JSON 风格的文档（document）**。其层级结构为：一个 **数据库（database）** 下包含若干 **集合（collection）**，每个集合里存放若干 **文档（document）**。本项目用 `agentic_search` 数据库下的 `documents` 集合存放论文（每篇按章节切分为 `sections` 数组），`memories` 集合存放 L1/L2 记忆。
+本项目用 `agentic_search` 数据库下的 `documents` 集合存放论文（每篇存为完整纯文本），`memories` 集合存放 L1/L2 记忆。
 
-用 MongoDB 集中存储有三点优势：第一，**原子性与一致性**——数据库的写入是原子的，不会出现「写了一半」的损坏文件；第二，**按条件查询**——可以用 `doc_id`、`level` 等字段精确检索；第三，**可视化**——用 MongoDB Compass 可以直观地浏览、搜索数据，便于教学调试。
+用 MongoDB 集中存储有三点优势：第一，**原子性与一致性**——数据库的写入是原子的，不会出现「写了一半」的损坏文件；第二，**按条件查询**——可以用 `doc_id`、`filename` 等字段精确检索；第三，**可视化**——用 MongoDB Compass 可以直观地浏览、搜索数据，便于教学调试。
 
 **PyMongo** 是 MongoDB 的官方 Python 驱动（同步）。它把数据库操作映射为 Python 对象方法：`MongoClient(uri)` 建立连接、`db["collection"]` 取集合、`collection.insert_one(doc)` 插入一条记录、`collection.find_one(query)` 查单条、`collection.find(query)` 查多条。这些方法都是同步阻塞的——对于本项目这种教学量级完全够用。
 
@@ -103,8 +101,8 @@ graph LR
         Core["配置层<br/>config.py"]
     end
     Pkg --> Services
-    Services --> Pymupdf["pymupdf<br/>结构化提取（dict + 标题启发式）"]
-    Pymupdf --> Docs[("MongoDB documents<br/>sections 章节数组")]
+    Services --> Pymupdf["pymupdf<br/>PDF 转纯文本"]
+    Pymupdf --> Docs[("MongoDB documents<br/>完整文本")]
     Core -.->|"提供连接配置"| Services
     Tests["tests/<br/>pytest"] -.->|"验证"| Services
     classDef aux fill:#fafafa,stroke:#999,stroke-dasharray: 5 5
@@ -139,7 +137,7 @@ agentic-search/
         └── test_documents.py       # 本模块创建：pytest 测试
 ```
 
-> PDF 经 pymupdf 提取的章节数组（`sections`），以及 L1/L2 记忆，全部存入 MongoDB（`agentic_search` 数据库，`localhost:27017`）。学生可用 **MongoDB Compass** 可视化查看数据库状态。安装 MongoDB Community Server 与 Compass 的步骤见[开始之前](./00-开始指南.md)。
+> PDF 经 pymupdf 提取的完整文本，以及 L1/L2 记忆，全部存入 MongoDB（`agentic_search` 数据库，`localhost:27017`）。学生可用 **MongoDB Compass** 可视化查看数据库状态。安装 MongoDB Community Server 与 Compass 的步骤见[开始之前](./00-开始指南.md)。
 
 其余文件（`main.py`、`api/routes.py`、`agents/graph.py`、`memory/store.py`）分别由[模块 2](./02-LangGraph-Agent.md) 与[模块 4](./04-TMT记忆系统.md) 创建。本模块只搭建地基。
 
@@ -188,9 +186,9 @@ name = "agentic-search"            # 分发名：pip 安装时用这个名字
 version = "0.1.0"
 requires-python = ">=3.11"          # 本项目要求 Python 3.11 及以上
 dependencies = [
-    "pymupdf",                      # PDF → 结构化提取（get_text("dict") + 标题启发式）
+    "pymupdf",                      # PDF → 纯文本提取（get_text("text")）
     "pydantic-settings",            # 配置层：从 .env 读取并做类型校验
-    "pymongo",                     # MongoDB Python 驱动（同步）：存取 sections 章节与记忆
+    "pymongo",                     # MongoDB Python 驱动（同步）：存取文档文本与记忆
 ]
 
 [dependency-groups]
@@ -278,7 +276,7 @@ MONGO_DB=agentic_search
 逐项讲解：
 
 - `LLM_MODEL`：LLM 模型名，Agent 用它决定调用哪个模型。换模型只改这里。
-- `MONGO_URI` / `MONGO_DB`：MongoDB 连接地址与数据库名。本模块文档服务把 pymupdf 提取的章节存入该库的 `documents` 集合，[模块 4](./04-TMT记忆系统.md) 的记忆系统则使用 `memories` 集合。集中配置便于将来把数据库迁移到远程服务器——只需改这一处。
+- `MONGO_URI` / `MONGO_DB`：MongoDB 连接地址与数据库名。本模块文档服务把 pymupdf 提取的完整文本存入该库的 `documents` 集合，[模块 4](./04-TMT记忆系统.md) 的记忆系统则使用 `memories` 集合。集中配置便于将来把数据库迁移到远程服务器——只需改这一处。
 
 > 在实际开发中，请将 `.env.example` 复制为 `.env`：`cp .env.example .env`。并将 `.env` 加入 `.gitignore`。
 
@@ -333,155 +331,88 @@ uv run python -c "from agentic_search.configs.config import settings; print(sett
 
 | 函数 | 职责 |
 |------|------|
-| `parse_pdf(pdf_path)` | 用 pymupdf 把 PDF 切分为 `sections` 章节列表 |
-| `store_document(doc_id, filename, sections)` | 把章节列表写入 MongoDB `documents` 集合 |
+| `parse_pdf(pdf_path)` | 用 pymupdf 把 PDF 转为完整纯文本 |
+| `store_document(doc_id, filename, text)` | 把完整文本写入 MongoDB `documents` 集合 |
 | `list_documents()` | 从 MongoDB 查询所有文档，返回 doc_id 与文件名 |
-| `read_document(doc_id)` | 从 MongoDB 读取指定文档的全部章节，拼成全文 |
-| `read_section(doc_id, section_id)` | 从 MongoDB 读取指定文档的某一章节正文 |
+| `read_document(doc_id)` | 从 MongoDB 读取指定文档的完整记录（含 text 字段） |
 
 它们都位于 `agentic_search.services.documents`，调用方式统一为包化 import：
 
 ```python
-from agentic_search.services.documents import parse_pdf, store_document, list_documents, read_document, read_section
+from agentic_search.services.documents import parse_pdf, store_document, list_documents, read_document
 ```
 
-注意：这与旧版扁平结构的 `from src.tools import parse_pdf` 完全不同。包化布局让 import 路径不再依赖文件在磁盘上的相对位置，只依赖包名——这是「可测试、可分发」的关键。
+注意：包化布局让 import 路径只依赖包名，与文件在磁盘上的相对位置无关——这是「可测试、可分发」的关键。
 
 ### 3.1 `parse_pdf(pdf_path)`
 
 **功能定义**：
 
 ```python
-def parse_pdf(pdf_path: str | Path) -> list[dict]:
-    """读取 PDF，用 pymupdf dict 提取结构化文本，按标题启发式切分章节。"""
+def parse_pdf(pdf_path: str | Path) -> str:
+    """读取 PDF，用 pymupdf 提取完整纯文本。不做任何切分。"""
 ```
 
-输入：PDF 文件路径（如 `"paper.pdf"`，可放在 `backend/` 下任意位置）。输出：`sections` 列表，每项形如 `{"section_id", "title", "level", "text"}`，已按标题字号切分好；图片等非文字内容（block `type=1`）自动丢弃。
+输入：PDF 文件路径（如 `"paper.pdf"`，可放在 `backend/` 下任意位置）。输出：完整纯文本字符串——所有页面的文字按排版顺序拼接。
 
-**pymupdf 基础用法**（官方文档：https://pymupdf.readthedocs.io/）。核心是「打开文档 → 逐页取结构化字典 → 遍历 blocks/lines/spans」：
+**pymupdf 基础用法**（官方文档：https://pymupdf.readthedocs.io/）。核心是「打开文档 → 逐页取纯文本 → 拼接 → 关闭」：
 
 ```python
 import pymupdf
 
 doc = pymupdf.open("example.pdf")          # 打开文档
 for page in doc:                            # 逐页迭代
-    page_dict = page.get_text("dict")       # 返回结构化字典（而非纯文本）
-    for block in page_dict["blocks"]:       # 每页若干 block（≈段落）
-        if block["type"] != 0:              # type=0 是文字，type=1 是图片 → 跳过
-            continue
-        for line in block["lines"]:         # 每个 block 若干行
-            for span in line["spans"]:      # 每行若干 span（同字号同字体的连续文字）
-                print(span["text"], span["size"])   # 文字内容 + 字号
+    text = page.get_text("text")            # 该页的纯文本
+    print(text)
+doc.close()
 ```
 
-关键概念：`pymupdf.open(path)` 打开 PDF（返回 Document 对象）；`for page in doc` 遍历每一页；`page.get_text("dict")` 返回四层嵌套字典（`page → blocks → lines → spans`），每个 span 带 `size`/`font`/`flags` 等版式属性；`block["type"]` 区分文字块（0）与图片块（1），图片块直接跳过即满足"只留文字"的要求。这套结构正是步骤 3.1 `_extract_sections` 做标题启发式的输入。
+关键概念：`pymupdf.open(path)` 打开 PDF（返回 Document 对象）；`for page in doc` 遍历每一页；`page.get_text("text")` 返回该页的纯文本字符串，按 PDF 排版顺序排列；`doc.close()` 释放资源。
 
-> 现代导入写 `import pymupdf`（pymupdf ≥1.23.8 的官方推荐别名）。旧代码里的 `import fitz` 仍可用，但官方文档统一用 `import pymupdf`，本项目也用这个。
+> 现代导入写 `import pymupdf`（pymupdf ≥1.23.8 的官方推荐别名）。
 
-**转换效果**。假设 PDF 中有：
+**为什么只提取纯文本、不做切分？** 切分是 agent 的职责。agent 用 `search_papers(pattern)` 正则搜索行号定位关键词，再用 `read_paper(doc_id, start_line, end_line)` 按行号取上下文——完全自主地决定读哪段。上传时预切分会把全文打散成固定片段，agent 被迫在预切的边界里搜索，失去了自主定位的灵活性。这与 omp 用 `grep` + `read` 探索代码库完全一致：文件以原始形态存在，agent 按需读取。
 
-```
-1 Introduction
-Transformers have revolutionized NLP...
-```
-
-pymupdf 的 `"text"` 模式只给纯文本，丢失了「第一行是标题」的线索；而 `"dict"` 模式多带回字号信息——标题行的 span `size` 明显大于正文：
-
-```
-"1 Introduction"               size=14.0   ← 标题（字号大）
-"Transformers have ..."        size=10.0   ← 正文（字号小）
-```
-
-标题启发式正是利用这层版式信息：把字号大于正文（中位数）的 span 当作章节边界，切出一个个 `sections`。文字内容原样保留，且**额外恢复了章节结构**——这正是 Agent 按需取片段所依赖的结构。
-
-**你需要实现的逻辑**：检查文件是否存在 → 打开 PDF → 调 `_extract_sections` 按标题启发式切分 → 关闭文档 → 返回 `sections` 列表（无标题时走兜底）。以下是**教学示例，展示核心逻辑，非完整实现**：
+**你需要实现的逻辑**：检查文件是否存在 → 打开 PDF → 逐页取 `get_text("text")` 拼接 → 关闭文档 → 返回完整字符串。以下是**教学示例，展示核心逻辑，非完整实现**：
 
 ```python
 from pathlib import Path
-import statistics
 import pymupdf
 
 
-def parse_pdf(pdf_path: str | Path) -> list[dict]:
-    """读取 PDF，用 pymupdf dict 提取结构化文本，按标题启发式切分章节。
-
-    返回 sections 列表，每项 {"section_id", "title", "level", "text"}。
-    图片等非文字内容（block type=1）自动丢弃。
-    """
+def parse_pdf(pdf_path: str | Path) -> str:
+    """读取 PDF，用 pymupdf 提取完整纯文本。不做任何切分。"""
     p = Path(pdf_path)
     if not p.exists():
         raise FileNotFoundError(f"文件不存在：{pdf_path}")
     doc = pymupdf.open(p)
-    sections = _extract_sections(doc)        # 见下方启发式实现
-    if not sections:                         # 兜底：未检测出任何标题
-        fallback = "\n".join(page.get_text() for page in doc)
-        doc.close()
-        return [{"section_id": 0, "title": "(全文)", "level": 0, "text": fallback}]
+    pages = [page.get_text("text") for page in doc]
     doc.close()
-    return sections
-
-
-def _extract_sections(doc) -> list[dict]:
-    """标题启发式：字号大于正文中位数的 span 视为标题，据此把全文切成章节。
-
-    简化版教学实现——只看字号，生产可结合字体名/加粗标志/编号模式更精细。
-    """
-    # 第一遍：收集所有文字 span 的字号，算出正文中位数
-    sizes, spans = [], []            # spans 记录 (字号, 文字)，便于第二遍切分
-    for page in doc:
-        for block in page.get_text("dict")["blocks"]:
-            if block.get("type", 0) != 0:        # 跳过图片块
-                continue
-            for line in block["lines"]:
-                for span in line["spans"]:
-                    sizes.append(span["size"])
-                    spans.append((span["size"], span["text"]))
-    if not sizes:
-        return []
-    body_size = statistics.median(sizes)         # 正文字号 ≈ 全部字号的中位数
-
-    # 第二遍：字号大于正文（取 1.1 倍阈值）的 span 当标题，按标题切块
-    sections, sid, current_title, buf = [], 0, None, []
-    for size, text in spans:
-        if size > body_size * 1.1 and text.strip():     # 命中标题
-            if current_title is not None or buf:        # 把上一段正文落盘
-                sections.append({"section_id": sid, "title": current_title or "(全文)",
-                                 "level": 0, "text": "\n".join(buf)})
-                sid += 1
-            current_title, buf = text.strip(), []
-        else:
-            buf.append(text)
-    if current_title is not None or buf:                # 收尾：最后一段正文
-        sections.append({"section_id": sid, "title": current_title or "(全文)",
-                         "level": 0, "text": "\n".join(buf)})
-    return sections
+    return "\n".join(pages)
 ```
 
 讲解要点：
 
 - **无需缓存**：pymupdf 的 `open()` 是轻量操作，每次调用即可，无需缓存层。
-- **错误处理**：路径不存在时抛出 `FileNotFoundError` 并附上具体路径，便于排查。调用方（[模块 2](./02-LangGraph-Agent.md) 的 API 层）可以捕获此异常并向用户返回友好提示。
-- **图片等非文字内容**：遍历 blocks 时用 `block["type"] != 0` 跳过图片块（`type=1`），只保留文字，"丢弃"天然成立。
-- **兜底 section**：短论文可能没有任何 span 被判定为标题（`_extract_sections` 返回空）。此时 `parse_pdf` 返回单条 `{section_id:0, title:"(全文)", level:0}` 的兜底 section，保证下游 Agent 永远拿到非空章节列表。
-- **启发式是简化版**：`_extract_sections` 只看字号（阈值取正文中位数的 1.1 倍）。生产实现可结合字体名（`font`）、加粗标志（`flags`）、标题编号模式（如 `1.2.3`）做更精细的切分与层级（`level`）推断。
+- **错误处理**：路径不存在时抛出 `FileNotFoundError` 并附上具体路径，便于排查。
+- **完整文本**：所有页的纯文本用 `"\n"` 拼接成一个字符串。这是 agent 工具（`read_paper`/`search_papers`/`extract_abstract`）按行号操作的基础。
 
 **测试你的函数**：准备任意一个 PDF 文件，放在 `backend/` 下：
 
 ```bash
 uv run python -c "
 from agentic_search.services.documents import parse_pdf
-secs = parse_pdf('你的文件.pdf')
-print(f'章节数: {len(secs)}')
-for s in secs:
-    print(s['section_id'], s['title'])
+text = parse_pdf('你的文件.pdf')
+print(f'文本长度: {len(text)}')
+print(f'前 200 字符: {text[:200]}')
 "
 ```
 
-**验证**：输出章节数与各章节标题（或 `(全文)` 兜底），而非报错。注意每条 section 的 `text` 是纯文字，不含 `#` 标题标记。
+**验证**：输出文本长度（非零）和前 200 字符（含 PDF 原文内容），而非报错。
 
-### 3.2 `store_document(doc_id, filename, sections)`
+### 3.2 `store_document(doc_id, filename, text)`
 
-`parse_pdf` 只负责把 PDF 切成 `sections`；持久化由 `store_document` 完成。它把章节数组连同文档标识、文件名、上传时间写入 MongoDB 的 `documents` 集合。集合中每条记录的固定结构为 `{_id, doc_id, filename, sections, uploaded_at}`，其中 `sections` 是 `[{section_id, title, level, text}, ...]` 数组。
+`parse_pdf` 只负责把 PDF 转为纯文本；持久化由 `store_document` 完成。它把完整文本连同文档标识、文件名、上传时间写入 MongoDB 的 `documents` 集合。集合中每条记录的固定结构为 `{_id, doc_id, filename, text, uploaded_at}`，其中 `text` 是完整纯文本。
 
 > 在 MongoDB 术语中，一个 database（本项目为 `agentic_search`）下有若干 collection（集合，本项目为 `documents` 与 `memories`），每个集合里存放若干 document（文档，即一条记录）。注意区分「集合 collection」与「文档 document」：前者是表，后者是行。
 
@@ -500,13 +431,13 @@ _db = _client[settings.mongo_db]
 _documents_collection = _db["documents"]
 
 
-def store_document(doc_id: str, filename: str, sections: list[dict]) -> None:
-    """把一篇论文的 sections 章节数组存入 documents 集合。"""
+def store_document(doc_id: str, filename: str, text: str) -> None:
+    """把一篇论文的完整纯文本存入 documents 集合。"""
     _documents_collection.insert_one(
         {
             "doc_id": doc_id,                       # 文档唯一标识（上传时生成）
             "filename": filename,                   # 原始 PDF 文件名
-            "sections": sections,                   # parse_pdf 切出的章节数组
+            "text": text,                           # 完整纯文本
             "uploaded_at": datetime.now(timezone.utc),  # 上传时间
         }
     )
@@ -514,21 +445,19 @@ def store_document(doc_id: str, filename: str, sections: list[dict]) -> None:
 
 讲解要点：
 
-- **模块级连接**：`MongoClient(settings.mongo_uri)` 在模块被 import 时建立一次连接。PyMongo 的客户端内置连接池，多个 `insert_one` / `find_one` 复用同一连接，无需手动管理。`_db["documents"]` 取出 `documents` 集合的引用句柄，后续读写都通过它进行。
-- **`insert_one`**：向集合插入一条记录。若 `documents` 集合尚不存在，MongoDB 会在首次写入时自动创建——无需提前建表，这是 MongoDB 与关系型数据库（需要 `CREATE TABLE`）的显著区别。
+- **模块级连接**：`MongoClient(settings.mongo_uri)` 在模块被 import 时建立一次连接。PyMongo 的客户端内置连接池，多个 `insert_one` / `find_one` 复用同一连接，无需手动管理。
+- **`insert_one`**：向集合插入一条记录。若 `documents` 集合尚不存在，MongoDB 会在首次写入时自动创建——无需提前建表。
 - **`uploaded_at`**：记录上传时间。`datetime.now(timezone.utc)` 用带时区的 UTC 时间，避免不同服务器时区不一致导致的排序错误。
-- **schema：`{doc_id, filename, sections, uploaded_at}`**：`store_document` 现在存的是**章节数组**，不再存单一的全文字段。`sections` 里每项 `{section_id, title, level, text}` 由 `parse_pdf` 切好。下游 Agent 按需读某一章（`read_section`）或拼全文（`read_document`），而不是把整篇塞进上下文。
-- **零文件系统依赖**：上传的 PDF 经 pymupdf 提取后即丢弃，不在磁盘上留存任何中间文件。所有数据（章节数组）集中在 MongoDB 一处，便于备份、迁移与可视化查看。
+- **schema：`{doc_id, filename, text, uploaded_at}`**：扁平文档，`text` 是完整纯文本。agent 经 `read_paper(doc_id, start_line, end_line)` 按行号取片段，或经 `search_papers(pattern)` 正则定位。
 
-**验证**：先用 `parse_pdf` 切出一个 PDF 的章节，再调用 `store_document` 存入，然后打开 **MongoDB Compass** 查看 `agentic_search` 的 `documents` 集合——应能看到一条新记录，其 `sections` 字段是章节数组，每个元素含 `section_id`/`title`/`level`/`text`。
+**验证**：先用 `parse_pdf` 提取一个 PDF 的文本，再调用 `store_document` 存入，然后打开 **MongoDB Compass** 查看 `agentic_search` 的 `documents` 集合——应能看到一条新记录，其 `text` 字段是完整纯文本。
 
-### 3.3 `list_documents()`、`read_document(doc_id)` 与 `read_section(doc_id, section_id)`
+### 3.3 `list_documents()` 与 `read_document(doc_id)`
 
-这三个函数负责从 MongoDB 读取文档，供 Agent 自主决定「列出有哪些论文、读取某篇全文、或只读某一章节」。
+这两个函数负责从 MongoDB 读取文档，供 Agent 自主决定「列出有哪些论文、读取某篇全文」。
 
-- `list_documents() -> list[dict]`：查询 `documents` 集合中的全部记录，只取 `doc_id` 与 `filename` 两个字段（不取动辄上万字的 `sections` 正文），返回 `[{doc_id, filename}, ...]`。
-- `read_document(doc_id) -> str`：按 `doc_id` 精确查找一条记录，把其 `sections` 各章 `text` 用 `\n\n` 拼成全文返回。找不到则抛出 `KeyError`。这是「读全文」的便利函数。
-- `read_section(doc_id, section_id) -> str`：按 `doc_id` 找到文档，从其 `sections` 数组取指定 `section_id` 的 `text` 返回。这是 02 模块 Agent 工具 `read_section` 的底层依赖。
+- `list_documents() -> list[dict]`：查询 `documents` 集合中的全部记录，只取 `doc_id` 与 `filename` 两个字段（不取 `text` 正文），返回 `[{doc_id, filename}, ...]`。
+- `read_document(doc_id) -> dict`：按 `doc_id` 精确查找一条记录，返回完整文档 `{doc_id, filename, text, uploaded_at}`。找不到则抛出 `KeyError`。
 
 以下是**教学示例，展示核心逻辑，非完整实现**：
 
@@ -542,44 +471,32 @@ def list_documents() -> list[dict]:
     ]
 
 
-def read_document(doc_id: str) -> str:
-    """按 doc_id 读取一篇文档的全部章节，拼成全文。"""
+def read_document(doc_id: str) -> dict:
+    """按 doc_id 读取一篇文档的完整记录。找不到则抛出 KeyError。"""
     doc = _documents_collection.find_one({"doc_id": doc_id})
     if doc is None:
         raise KeyError(f"文档不存在: {doc_id}")
-    return "\n\n".join(s["text"] for s in doc["sections"])
-
-
-def read_section(doc_id: str, section_id: int) -> str:
-    """按 doc_id + section_id 读取某一章节正文。找不到则抛出 KeyError。"""
-    doc = _documents_collection.find_one({"doc_id": doc_id})
-    if doc is None:
-        raise KeyError(f"文档不存在: {doc_id}")
-    for s in doc["sections"]:
-        if s["section_id"] == section_id:
-            return s["text"]
-    raise KeyError(f"章节不存在: doc_id={doc_id} section_id={section_id}")
+    return doc
 ```
 
 讲解要点：
 
-- **`find({}, {投影})`**：第一个参数 `{}` 是查询条件（空字典表示「全部」）；第二个参数是**投影**——`{"doc_id": 1, "filename": 1}` 表示只返回这两个字段，`"_id": 0` 表示排除默认会返回的 `_id`。`find` 返回一个**游标（cursor）**，可像列表一样遍历。投影让列表接口只传输文件名而非整篇论文全文，大幅减少数据量。
-- **`find_one({"doc_id": ...})`**：按条件查找**单条**记录，返回一个字典（找不到则返回 `None`）。这里用 `doc_id` 做精确匹配。
-- **按 `doc_id` 主键查询**：数据在 MongoDB 里，按 `doc_id` 主键查询即可，不存在则抛 `KeyError`，由调用方（[模块 2](./02-LangGraph-Agent.md) 的 API 层）处理。
+- **`find({}, {投影})`**：第一个参数 `{}` 是查询条件（空字典表示「全部」）；第二个参数是**投影**——`{"doc_id": 1, "filename": 1}` 表示只返回这两个字段，`"_id": 0` 表示排除默认会返回的 `_id`。投影让列表接口只传输文件名而非整篇论文全文，大幅减少数据量。
+- **`find_one({"doc_id": ...})`**：按条件查找**单条**记录，返回一个字典（找不到则返回 `None`）。
 
 **验证**（假设已通过 `store_document` 存入至少一篇文档）：
 
+```bash
 uv run python -c "
-from agentic_search.services.documents import list_documents, read_document, read_section
+from agentic_search.services.documents import list_documents, read_document
 docs = list_documents()
 print('文档列表:', docs)
 if docs:
     did = docs[0]['doc_id']
-    full = read_document(did)              # 拼接全文
-    print('读取全文成功，前 200 字符:', full[:200])
-    sec = read_section(did, 0)             # 只读第 0 章
-    print('读取第 0 章前 100 字符:', sec[:100])
+    doc = read_document(did)
+    print('读取成功，前 200 字符:', doc['text'][:200])
 "
+```
 
 ---
 
@@ -618,20 +535,18 @@ with pytest.raises(FileNotFoundError):
 
 #### 4.1 测试 `parse_pdf`
 
-`parse_pdf` 是纯提取函数（输入文件路径、输出 `sections` 章节列表），不依赖 MongoDB，测试最直接：
+`parse_pdf` 是纯提取函数（输入文件路径、输出纯文本字符串），不依赖 MongoDB，测试最直接：
 
 ```python
 from agentic_search.services.documents import parse_pdf
 import pytest
 
 
-def test_parse_pdf_returns_sections():
-    """parse_pdf 应返回章节列表，每项含 section_id/title/level/text。"""
+def test_parse_pdf_returns_text():
+    """parse_pdf 应返回非空字符串。"""
     result = parse_pdf("test_sample.pdf")
-    assert isinstance(result, list)
-    assert len(result) > 0                  # 至少有兜底 section
-    keys = {"section_id", "title", "level", "text"}
-    assert all(keys <= set(s.keys()) for s in result)
+    assert isinstance(result, str)
+    assert len(result) > 0
 
 
 def test_parse_pdf_file_not_found():
@@ -642,36 +557,22 @@ def test_parse_pdf_file_not_found():
 
 > 你需要准备一个测试用 PDF（放在 `backend/` 目录下，命名为 `test_sample.pdf`）。可创建一个简单文本文档导出为 PDF，或使用任何已有论文 PDF。`parse_pdf` 不依赖 MongoDB，故可独立测试。
 
-注意：每个 section 的 `text` 是纯文字，不含 `#` 之类结构标记——pymupdf 不产出 Markdown 标记，标题信息已提取到 `title` 字段。
+#### 4.2 测试 `store_document`、`list_documents`、`read_document`
 
-#### 4.2 测试 `store_document`、`list_documents`、`read_document` 与 `read_section`
-
-这些函数操作 MongoDB，测试前需确保 MongoDB 服务已启动（见[开始之前](./00-开始指南.md)）。测试思路：先用 `store_document` 写入一条记录（含若干章节），再用 `list_documents` / `read_document` / `read_section` 读回验证。以下是**教学示例**：
+这些函数操作 MongoDB，测试前需确保 MongoDB 服务已启动（见[开始之前](./00-开始指南.md)）。测试思路：先用 `store_document` 写入一条记录（含完整文本），再用 `list_documents` / `read_document` 读回验证。以下是**教学示例**：
 
 ```python
-from agentic_search.services.documents import store_document, list_documents, read_document, read_section
+from agentic_search.services.documents import store_document, list_documents, read_document
 import pytest
 
 
 def test_store_and_read_document():
-    """存入后应能按 doc_id 读回全文（各章节 text 拼接）。"""
+    """存入后应能按 doc_id 读回完整文本。"""
     doc_id = "test-doc-001"
-    sections = [{"section_id": 0, "title": "引言", "level": 0, "text": "正文内容"}]
-    store_document(doc_id, "测试论文.pdf", sections)
-    content = read_document(doc_id)
-    assert isinstance(content, str)
-    assert "正文内容" in content
-
-
-def test_read_section():
-    """read_section 应按 section_id 取出指定章节正文。"""
-    doc_id = "test-doc-sec"
-    sections = [
-        {"section_id": 0, "title": "引言", "level": 0, "text": "引言正文"},
-        {"section_id": 1, "title": "方法", "level": 0, "text": "方法正文"},
-    ]
-    store_document(doc_id, "测试论文.pdf", sections)
-    assert read_section(doc_id, 1) == "方法正文"
+    store_document(doc_id, "测试论文.pdf", "正文内容")
+    doc = read_document(doc_id)
+    assert isinstance(doc["text"], str)
+    assert "正文内容" in doc["text"]
 
 
 def test_list_documents_returns_list():
@@ -697,7 +598,7 @@ def test_read_document_not_found():
 讲解要点：
 
 - `test_store_and_read_document` 把「写入」与「读取」成对验证——写入什么、读回应一致。这是数据库操作测试的基本范式：先写后读，断言数据未在往返中丢失。
-- `list_documents` 用投影只取 `doc_id` 与 `filename`，故断言这两个字段存在即可（`sections` 正文不会出现在列表结果中）。
+- `list_documents` 用投影只取 `doc_id` 与 `filename`，故断言这两个字段存在即可（`text` 正文不会出现在列表结果中）。
 - MongoDB 测试会在数据库中留下测试记录。教学阶段可用 MongoDB Compass 手动清理，或为每个测试生成随机 `doc_id` 避免相互干扰。
 
 
@@ -719,15 +620,15 @@ uv run pytest tests/test_documents.py -v
 
 ```bash
 uv run python -c "
-from agentic_search.services.documents import parse_pdf, store_document, list_documents, read_document, read_section
+from agentic_search.services.documents import parse_pdf, store_document, list_documents, read_document
 
-# 1. 将一个 PDF 切分为章节
-sections = parse_pdf('你的文件.pdf')
-print(f'提取完成，章节数: {len(sections)}')
+# 1. 将一个 PDF 转为纯文本
+text = parse_pdf('你的文件.pdf')
+print(f'提取完成，文本长度: {len(text)}')
 
 # 2. 存入 MongoDB documents 集合
 doc_id = 'demo-paper'
-store_document(doc_id, '你的文件.pdf', sections)
+store_document(doc_id, '你的文件.pdf', text)
 print('已存入 MongoDB documents 集合')
 
 # 3. 列出所有文档
@@ -737,21 +638,16 @@ docs = list_documents()
 for d in docs:
     print(f'  {d}')
 
-# 4. 按 doc_id 读取文档全文（各章 text 拼接）
+# 4. 按 doc_id 读取文档
 print()
-print('=== 读取全文 ===')
-content = read_document(doc_id)
+print('=== 读取文档 ===')
+doc = read_document(doc_id)
 print(f'读取成功，前 200 个字符:')
-print(content[:200])
-
-# 5. 按 doc_id + section_id 只读某一章
-print()
-print('=== 读取第 0 章 ===')
-print(read_section(doc_id, 0)[:100])
+print(doc['text'][:200])
 "
 ```
 
-**验证**：命令正常执行，输出文档列表与文档内容，文本中包含 PDF 原文内容，无报错。随后打开 **MongoDB Compass**，连接 `mongodb://localhost:27017`，在 `agentic_search` 数据库的 `documents` 集合中应能看到刚才存入的记录，其 `sections` 字段含完整章节数组。
+**验证**：命令正常执行，输出文档列表与文档内容，文本中包含 PDF 原文内容，无报错。随后打开 **MongoDB Compass**，连接 `mongodb://localhost:27017`，在 `agentic_search` 数据库的 `documents` 集合中应能看到刚才存入的记录，其 `text` 字段是完整纯文本。
 
 ---
 
@@ -761,7 +657,7 @@ print(read_section(doc_id, 0)[:100])
 
 - [ ] `backend/pyproject.toml` 存在，包名为 `agentic-search`，包含 `pymupdf`、`pydantic-settings`、`pymongo`、`pytest`（dev）
 - [ ] `backend/src/agentic_search/configs/config.py` 存在，`settings` 含 `mongo_uri`、`mongo_db`，可从 `.env` 读取配置
-- [ ] `backend/src/agentic_search/services/documents.py` 包含 `parse_pdf`、`store_document`、`list_documents`、`read_document`、`read_section`
+- [ ] `backend/src/agentic_search/services/documents.py` 包含 `parse_pdf`、`store_document`、`list_documents`、`read_document`
 - [ ] MongoDB 服务已启动（`localhost:27017`），MongoDB Compass 可连接查看 `agentic_search`
 - [ ] 可编辑安装成功：
 
@@ -781,21 +677,20 @@ uv run pytest tests/test_documents.py -v
 预期输出示例：
 
 ```
-tests/test_documents.py::test_parse_pdf_returns_sections PASSED
+tests/test_documents.py::test_parse_pdf_returns_text PASSED
 tests/test_documents.py::test_parse_pdf_file_not_found PASSED
 tests/test_documents.py::test_store_and_read_document PASSED
-tests/test_documents.py::test_read_section PASSED
 tests/test_documents.py::test_list_documents_returns_list PASSED
 tests/test_documents.py::test_list_documents_result_format PASSED
 tests/test_documents.py::test_read_document_not_found PASSED
-======================== 7 passed in 1.2s ========================
+======================== 6 passed in 1.2s ========================
 ```
 
 - [ ] 额外验证：以下命令返回非零数字（PDF 解析成功）：
 
 ```bash
 cd backend
-uv run python -c "from agentic_search.services.documents import parse_pdf, store_document, read_document; secs = parse_pdf('你的文件.pdf'); store_document('verify', '你的文件.pdf', secs); print(len(read_document('verify')))"
+uv run python -c "from agentic_search.services.documents import parse_pdf, store_document, read_document; text = parse_pdf('你的文件.pdf'); store_document('verify', '你的文件.pdf', text); print(len(read_document('verify')['text']))"
 ```
 
 ---
@@ -845,6 +740,6 @@ file_path = Path("论文.pdf")               # parse_pdf 接收文件路径，�
 
 ## 下一步
 
-本模块完成了后端包的地基：包化布局、配置层、文档服务。在[模块 2：LangGraph Agent](./02-LangGraph-Agent.md) 中，Agent 的论文导航工具（`list_papers`/`list_sections`/`read_section`/`search_sections`）将调用本模块的 `read_section`、`list_documents` 等函数，按需读取本模块切好的章节片段；同时 Agent 会用到 `configs/config.py` 中的 LLM 配置，并通过 FastAPI 把整个工作流暴露为 HTTP API。
+本模块完成了后端包的地基：包化布局、配置层、文档服务。在[模块 2：LangGraph Agent](./02-LangGraph-Agent.md) 中，Agent 的论文导航工具（`list_papers`/`read_paper`/`search_papers`/`extract_abstract`）将调用本模块的 `read_document`、`list_documents` 等函数，按行号按需读取本模块产出的完整文本；同时 Agent 会用到 `configs/config.py` 中的 LLM 配置，并通过 FastAPI 把整个工作流暴露为 HTTP API。
 
 按照学习路径（模块 1 → 模块 2 → 模块 3 → 模块 4），接下来进入[模块 2：LangGraph Agent](./02-LangGraph-Agent.md)，在文档能力之上构建「LLM 自主调用论文导航工具、迭代搜索与回答」的 Agent 工作流。
