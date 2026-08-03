@@ -335,17 +335,17 @@ def retry(max_attempts: int = 3):
     def decorator(func):
         @functools.wraps(func)   # 保留原函数的 __name__、__doc__，被装饰后仍可识别
         def wrapper(*args, **kwargs):
-            last_exc = None
+            last_exc: Exception | None = None
             for attempt in range(1, max_attempts + 1):
                 try:
                     return func(*args, **kwargs)
                 except (httpx.TimeoutException, httpx.ConnectError) as e:
-                    last_exc = e
                     print(f"  [retry] {func.__name__} 第 {attempt}/{max_attempts} 次失败：{e}")
+                    last_exc = e
+            assert last_exc is not None  # 循环至少执行一次，且未 return 意味着每次都抛了异常
             raise last_exc   # 重试耗尽，抛出最后一次异常
         return wrapper
     return decorator
-```
 
 逐层拆解：
 
