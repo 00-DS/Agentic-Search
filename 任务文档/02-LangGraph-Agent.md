@@ -6,7 +6,7 @@
 
 1. 理解 **LangGraph agent** 的四个核心概念：StateGraph（有向图容器）、Node（节点函数）、Edge（边），以及 agent 区别于固定流程的关键——**条件边**（`add_conditional_edges`）；认识到「没有条件边、没有循环的线性图」只是 agent 图的退化特例
 2. 用 `bind_tools` + `ToolNode` 构建 **ReAct 循环**：LLM 自主决定调用哪个工具、调用几次、何时认为「读够了」直接作答——而不是写死「先分析意图、再读全文」
-3. 实现**论文导航工具**（`list_papers`/`read_paper`/`search_papers`/`extract_abstract`），理解 agent 如何像 omp/hermes 用 `glob`/`read`/`grep` 自主探索代码库那样，探索论文语料库
+3. 实现四个**论文导航工具**（`list_papers`/`read_paper`/`search_papers`/`extract_abstract`），理解 agent 如何像 omp/hermes 用 `glob`/`read`/`grep` 自主探索代码库那样，探索论文语料库
 4. 理解 Python **装饰器（decorator）**：从手写自定义 `@retry`，到 LangChain `@tool`、FastAPI `@router`、标准库 `@dataclass`——认识 `@` 语法背后的高阶函数本质
 5. 用 **LangChain** 的 `init_chat_model` 调用 DeepSeek（替代旧版裸 `httpx`），理解**工具调用协议（tool calling）**为何让 agent 层必须引入框架
 6. 用 `uv run uvicorn` 启动 API 服务，并通过 `curl` 验证 SSE 流式 agent 问答
@@ -110,7 +110,7 @@ graph LR
 三个逼出 agentic 行为的设计约束：
 
 1. **没有「读整篇论文」的工具**。agent 必须先 `search_papers` 定位行号、再 `read_paper` 按行号取片段——这是「按需取片段」的强约束，既逼出真正的多轮探索，也是多论文场景下不撑爆上下文窗口的根本保障。
-2. **`search_papers` 用正则、不用 embedding**。对齐 omp `grep`：参数是正则 `pattern`（不是语义 query），返回命中行+行号+上下文。智能来自 LLM 自主迭代构造正则。**不用向量库、不做 embedding。**
+2. **`search_papers` 用正则、不用 embedding**。对齐 omp `grep`：参数是正则 `pattern`（不是语义 query），返回命中行+行号。智能来自 LLM 自主迭代构造正则。**不用向量库、不做 embedding。**
 3. **`extract_abstract` 是读取时工具，不是上传预处理**。对齐 omp 的 `summarizeCode()`：agent 按需调用，从完整文本里正则提取 abstract 段落。不在上传时预计算。
 
 ---
