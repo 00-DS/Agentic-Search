@@ -6,7 +6,7 @@
 
 1. 理解 **LangGraph agent** 的四个核心概念：StateGraph（有向图容器）、Node（节点函数）、Edge（边），以及 agent 区别于固定流程的关键——**条件边**（`add_conditional_edges`）；认识到「没有条件边、没有循环的线性图」只是 agent 图的退化特例
 2. 用 `bind_tools` + `ToolNode` 构建 **ReAct 循环**：LLM 自主决定调用哪个工具、调用几次、何时认为「读够了」直接作答——而不是写死「先分析意图、再读全文」
-3. 实现四个**论文导航工具**（`list_papers`/`read_paper`/`search_papers`/`extract_abstract`），理解 agent 如何像 omp/hermes 用 `glob`/`read`/`grep` 自主探索代码库那样，探索论文语料库
+3. 用 `build_graph()` 把[模块 1](./01-Python文档工具.md) 的四个论文导航工具组装成一个 **ReAct 循环**——理解 agent 如何像 omp/hermes 用 `glob`/`read`/`grep` 自主探索代码库那样，探索论文语料库
 4. 理解 Python **装饰器（decorator）**：从手写自定义 `@retry`，到 LangChain `@tool`、FastAPI `@router`、标准库 `@dataclass`——认识 `@` 语法背后的高阶函数本质
 5. 用 **LangChain** 的 `init_chat_model` 调用 DeepSeek（替代旧版裸 `httpx`），理解**工具调用协议（tool calling）**为何让 agent 层必须引入框架
 6. 用 `uv run uvicorn` 启动 API 服务，并通过 `curl` 验证 SSE 流式 agent 问答
@@ -45,7 +45,7 @@
 
 **CORS（跨源资源共享）** 是浏览器安全机制：前端（`localhost:3000`）与后端（`localhost:8000`）端口不同时，浏览器默认拦截跨端口请求，后端需用 CORS 中间件显式放行。
 
-**装饰器（decorator）** 是 Python 的语法机制：用 `@` 给函数或类「套一层额外逻辑」而不改写其本体，本质是接收函数、返回函数的高阶函数，`@` 只是语法糖。本模块在第 5 步手写一个**自定义装饰器** `@retry`（LLM 调用失败自动重试），在第 6 步用 LangChain 的 `@tool` 把普通函数注册成 agent 工具，在第 9 步发现 FastAPI 的 `@router.post` 是库提供的装饰器——同一个机制，既能挂路由、注册工具，也能加重试。模块 4 的 `@dataclass` 也是标准库装饰器。
+**装饰器（decorator）** 是 Python 的语法机制：用 `@` 给函数或类「套一层额外逻辑」而不改写其本体，本质是接收函数、返回函数的高阶函数，`@` 只是语法糖。本模块在第 5 步手写一个**自定义装饰器** `@retry`（LLM 调用失败自动重试），第 8 步发现 FastAPI 的 `@router.post` 是库提供的装饰器；[模块 1](./01-Python文档工具.md) 的 LangChain `@tool` 与模块 4 的标准库 `@dataclass` 也是装饰器——同一个机制，既能挂路由、注册工具，也能加重试。
 
 > 更多技术概念见 [概念速查](./概念速查.md)。
 
@@ -98,6 +98,7 @@ graph LR
 ## 前置条件
 
 - 已完成 [模块 1：Python 文档工具](./01-Python文档工具.md)——`services/documents.py` 中的 `parse_pdf`（返回完整纯文本）、`store_document`、`list_documents`、`read_document` 已实现且测试通过
+- `agents/tools.py` 中四个 `@tool` 工具（`list_papers`/`read_paper`/`search_papers`/`extract_abstract`）已实现
 - 后端已执行第 1 步的 `uv add`，`langgraph` / `langchain` / `langchain-openai` 等依赖安装完毕
 - 有可用的 DeepSeek API Key，写入 `backend/.env` 文件
 
@@ -134,14 +135,14 @@ backend/src/agentic_search/
 │   └── schemas.py       # 本模块新建：Pydantic 请求/响应模型
 ├── agents/
 │   ├── __init__.py
-│   ├── graph.py         # 本模块新建：LangGraph ReAct agent 图（llm_call ↔ tool_node）
-│   └── tools.py         # 本模块新建：四个论文导航工具（第 6 步）
+│   ├── tools.py         # 模块 1 已实现：list_papers / read_paper / search_papers / extract_abstract
+│   └── graph.py         # 本模块创建：ReAct agent 图
 ├── memory/
 │   ├── __init__.py
 │   └── store.py         # 模块 4 实现：L1/L2 记忆
 └── services/
     ├── __init__.py
-    └── documents.py     # 模块 1 已实现：parse_pdf 转纯文本 / list / read_document
+    └── documents.py     # 模块 1 已实现：parse_pdf / list_documents / read_document
 ```
 
 **设计说明——为什么要"包化"？**
@@ -160,7 +161,7 @@ uv add langgraph langchain langchain-openai fastapi 'uvicorn[standard]' pydantic
 | 依赖 | 职责 | 用在哪 |
 |------|------|--------|
 | `langgraph` | Agent 图工作流：StateGraph、条件边、`ToolNode`、`MessagesState` | `agents/graph.py` |
-| `langchain` | LLM 抽象 + 工具调用协议（`@tool` / `bind_tools`） | `agents/tools.py`、`agents/graph.py` |
+| `langchain` | LLM 抽象 + 工具调用协议（`@tool` / `bind_tools`） | `agents/graph.py` |
 | `langchain-openai` | OpenAI 兼容 provider（接 DeepSeek 的 `/chat/completions`） | `agents/graph.py` |
 | `fastapi` | Web 框架 | `main.py`、`api/routes.py` |
 | `uvicorn[standard]` | ASGI 服务器（`[standard]` 额外装入 uvloop 与 httptools，官方推荐的完整安装） | 启动命令 |
@@ -184,7 +185,7 @@ from langgraph.graph import StateGraph, START, END, MessagesState   # ← 直接
 # ① 状态：MessagesState 自带 messages 字段（带 add_messages reducer），无需自己写 TypedDict
 #    （第 4 步会讲 MessagesState 内部长什么样；这里先用起来，体会它开箱即用）
 
-# ② 一个 dummy 工具节点（真实版用 ToolNode 自动调度多个工具，见第 6、7 步）
+# ② 一个 dummy 工具节点（真实版用 ToolNode 自动调度多个工具，见第 6 步）
 def get_time(state: MessagesState):
     return {"messages": [ToolMessage(content="现在是 14:00", tool_call_id="call_1")]}
 
@@ -233,7 +234,7 @@ uv run python hello_agent.py
 
 - **`add_messages` reducer**：`messages` 字段标注 `Annotated[list, add_messages]`，表示节点返回的 messages 会**追加**到历史，而不是覆盖（普通字段才是覆盖）。这是循环的关键——工具产生的 `ToolMessage` 要追加进历史，下一轮 `llm_call` 才能看到「上一步调了什么、拿到了什么」。
 - **条件边（`add_conditional_edges`）**：第一个参数是源节点，第二个是路由函数（返回 `"tools"` 或 `END`），第三个是可选的「可能去向」列表（给图的可视化与校验用）。路由函数检查最后一条消息——有 `tool_calls` 就去执行工具，没有就结束。
-- **工具回流边**：`add_edge("tools", "llm_call")` 让工具执行完回到 LLM，形成循环。正式代码用 `ToolNode([...])` 替代手写的 `get_time`，它能根据 `tool_calls` 自动路由到正确的工具（见第 6、7 步）。
+- **工具回流边**：`add_edge("tools", "llm_call")` 让工具执行完回到 LLM，形成循环。正式代码用 `ToolNode([...])` 替代手写的 `get_time`，它能根据 `tool_calls` 自动路由到正确的工具（工具来自[模块 1](./01-Python文档工具.md)，组装见第 6 步）。
 
 > 📖 官方文档：[LangGraph 条件边](https://langgraph.com.cn/how-tos/branching/)
 
@@ -311,7 +312,7 @@ uv run python -c "from langgraph.graph import MessagesState; print(MessagesState
 
 ## 第 5 步：插曲——什么是装饰器？与自定义 `@retry`
 
-ReAct 循环里，`llm_call` 节点会反复调用 DeepSeek。网络偶发超时、断连是真实风险，重试是真实需求。在写节点之前，先引入一个贯穿本模块的工具——**装饰器（decorator）**，并手写一个自定义的 `@retry`。它将包在 agent 的 LLM 调用上（具体怎么包到 `.invoke()` 上，在第 7 步图组装里展开；本步先看装饰器机制本身）。
+ReAct 循环里，`llm_call` 节点会反复调用 DeepSeek。网络偶发超时、断连是真实风险，重试是真实需求。在写节点之前，先引入一个贯穿本模块的工具——**装饰器（decorator）**，并手写一个自定义的 `@retry`。它将包在 agent 的 LLM 调用上（具体怎么包到 `.invoke()` 上，在第 6 步图组装里展开；本步先看装饰器机制本身）。
 
 #### 什么是装饰器？
 
@@ -352,126 +353,21 @@ def retry(max_attempts: int = 3):
 - **带参数的装饰器**：`@retry(max_attempts=3)` 比 `@retry` 多一层嵌套——Python 先用 `3` 调用 `retry()` 拿到 `decorator`，再用 `decorator` 装饰下面的函数。之所以要这层嵌套，是为了让装饰器能「先吃参数，再吃函数」。
 - **捕获哪些异常**：只捕 `httpx.TimeoutException`（超时）与 `httpx.ConnectError`（连接失败）——这两类是网络层瞬时故障，重试有意义；业务异常（如 `KeyError`）不该被吞掉。
 
-`@retry` 用在 agent 的 `llm_call` 上长这样（示意，真实写法见第 7 步）：
+`@retry` 用在 agent 的 `llm_call` 上长这样（示意，真实写法见第 6 步）：
 
 ```python
 @retry(max_attempts=3)
 def _call_llm(messages):
-    """示意：agent 的 llm_call 节点内部调用 LLM（第 7 步用 llm_with_tools.invoke 展开）。"""
+    """示意：agent 的 llm_call 节点内部调用 LLM（第 6 步用 llm_with_tools.invoke 展开）。"""
     # return llm_with_tools.invoke(messages)
     ...
 ```
 
-> 装饰器是本模块的**主讲解入口**。后续会两次「点亮」同一个机制：第 6 步的 LangChain `@tool`（把函数注册成 agent 工具）、第 9 步的 FastAPI `@router.post`（把函数注册成 HTTP 路由），以及模块 4 的标准库 `@dataclass`——都是装饰器，只是来自不同的库。
+> 装饰器在[模块 1](./01-Python文档工具.md) 已通过 LangChain `@tool`（把函数注册成 agent 工具）首次介绍。本步手写自定义 `@retry`，是装饰器的第二次「点亮」。后续还有第 8 步的 FastAPI `@router.post`（把函数注册成 HTTP 路由），以及模块 4 的标准库 `@dataclass`——都是装饰器，只是来自不同的库。
 
 ---
 
-## 第 6 步：论文导航工具集
-
-这是 agent 的「手和眼」——四个工具，对标 omp 探索代码库的 `glob`/`read`/`grep`/`summarize`。用 LangChain 的 `@tool` 装饰器声明：装饰器会从函数的**类型注解 + docstring** 自动生成工具 schema，告诉 LLM「这个工具叫什么、接收什么参数、干什么」——这正是第 5 步装饰器概念的又一次「点亮」。
-
-新建 `agents/tools.py`：
-
-```python
-# agents/tools.py —— 教学示例：四个论文导航工具
-import re
-from langchain.tools import tool
-from agentic_search.services.documents import (
-    list_documents, read_document, _documents_collection,
-)
-
-
-def _get_doc_text(doc_id: str) -> str:
-    """按 doc_id 取出整篇文档的完整文本。找不到抛 KeyError。"""
-    doc = _documents_collection.find_one({"doc_id": doc_id})
-    if doc is None:
-        raise KeyError(f"文档不存在: {doc_id}")
-    return doc["text"]
-
-
-@tool
-def list_papers() -> list[dict]:
-    """列出语料库中所有论文。返回 [{doc_id, filename}]，不带正文。
-    对标 omp 的 glob：只列有哪些文件，不返回内容——判断相关性靠后续自主探索。
-    """
-    return list_documents()
-
-
-@tool
-def read_paper(doc_id: str, start_line: int = 1, end_line: int = 50) -> str:
-    """读取指定论文的指定行号范围。返回原始文本行。
-    对标 omp 的 read :50-100：按行号取片段，而不是返回全文。
-    """
-    text = _get_doc_text(doc_id)
-    lines = text.split("\n")
-    # 行号是 1-indexed，列表是 0-indexed
-    return "\n".join(lines[start_line - 1 : end_line])
-
-
-@tool
-def search_papers(pattern: str, doc_id: str = "") -> list[dict]:
-    """跨语料库（或指定论文）用正则搜索内容。返回 [{doc_id, line_number, line}]。
-    对标 omp 的 grep：参数是正则 pattern（不是语义 query），命中后 agent 通常再调
-    read_paper 按行号深入——搜索只给位置和片段，不给全文。
-    """
-    regex = re.compile(pattern)
-    hits = []
-    docs = [_documents_collection.find_one({"doc_id": doc_id})] if doc_id else list(_documents_collection.find({}))
-    for d in docs:
-        if d is None:
-            continue
-        for i, line in enumerate(d["text"].split("\n"), 1):
-            if regex.search(line):
-                hits.append({"doc_id": d["doc_id"], "line_number": i, "line": line})
-    return hits
-
-
-@tool
-def extract_abstract(doc_id: str) -> str:
-    """提取论文的 Abstract 段落。agent 按需调用，快速判断论文是否相关。
-    对标 omp 的 summarizeCode()：读取时的概览便利，不是上传预处理。
-    """
-    text = _get_doc_text(doc_id)
-    lines = text.split("\n")
-    for i, line in enumerate(lines):
-        if line.strip().lower() == "abstract":          # "abstract" 独立成段才算数
-            # 收集其下方第一个非空自然段
-            for j in range(i + 1, len(lines)):
-                para = lines[j].strip()
-                if para:                                  # 找到非空行，收集到空行为止
-                    end = j + 1
-                    while end < len(lines) and lines[end].strip():
-                        end += 1
-                    return "\n".join(lines[j:end])
-            return "Abstract 标题下方无内容"
-    return "未找到独立 Abstract 段落"
-```
-
-四工具与 omp 的对应关系：
-
-| 工具 | 签名 | 返回 | 对应 omp |
-|------|------|------|----------|
-| `list_papers` | `() -> list[dict]` | 语料库所有论文：`doc_id` + `filename`（**不带正文**） | `glob` |
-| `read_paper` | `(doc_id, start_line?, end_line?) -> str` | 指定行号范围的原始文本 | `read :50-100` |
-| `search_papers` | `(pattern, doc_id?) -> list[dict]` | 正则命中的 `doc_id`+`line_number`+`line` | `grep` |
-| `extract_abstract` | `(doc_id) -> str` | Abstract 段落（或未找到提示） | `summarizeCode()` |
-
-**为什么 `search_papers` 用正则、不用 embedding？** 这是对齐 omp `grep` 的核心决策，也是 agentic search 与旧时代 RAG 的根本区别。embedding/向量库会：① 引入额外的 embedding 模型依赖与首次下载；② 上传时对每段文本做向量入库的额外流程；③ 让搜索结果受模型质量制约、不可解释。正则命中是人能读懂的精确匹配，智能来自 LLM 自主迭代构造正则（先搜 `dataset|corpus|benchmark`，看结果再逼近），不是预计算的语义相似度。本项目严格对齐 omp 范式——**正则匹配、零额外依赖、结果可解释**。
-
-**为什么 `extract_abstract` 是工具、不是上传预处理？** 对齐 omp 的 `summarizeCode()`：它是**读取时的可选便利**，agent 按需调用，不是入库步骤。上传时只做格式转换（PDF → 纯文本），不做任何内容分析。提取逻辑也极简：从头找第一个独立成段的 "abstract" 行，取其下方第一个非空自然段。鲁棒性靠一个检查保证——只有 "abstract" 单独占一行才算数（排除 "In this abstract, we..." 这类误命中）。
-
-**验证**：
-
-```bash
-cd backend
-uv run python -c "from agentic_search.agents.tools import list_papers, read_paper, search_papers, extract_abstract; print([t.name for t in [list_papers, read_paper, search_papers, extract_abstract]])"
-```
-
-看到四个工具名即正确。
-
----
-
-## 第 7 步：组装 ReAct agent 图 —— `build_graph()`
+## 第 6 步：组装 ReAct agent 图 —— `build_graph()`
 
 第 2 步用桩函数验证过 ReAct 的图结构（条件边 + 工具回流）。现在把它「落到真 LLM + 真工具」上——四件套（`init_chat_model` + `bind_tools` + `ToolNode` + `add_conditional_edges`）拼出完整的 agent：
 
@@ -486,7 +382,7 @@ from agentic_search.agents.tools import list_papers, read_paper, search_papers, 
 
 def build_graph():
     """组装 ReAct agent 图：llm_call ⇄ tool_node 循环，条件边控制终止。"""
-    # ① 工具集（第 6 步定义）
+    # ① 工具集（模块 1 定义）
     tools = [list_papers, read_paper, search_papers, extract_abstract]
 
     # ② LLM：init_chat_model 接 DeepSeek（OpenAI 兼容接口），bind_tools 开启工具调用
@@ -520,12 +416,12 @@ def build_graph():
 
 逐点拆解四件套如何把第 2 步的桩函数换成真 agent：
 
-- **`init_chat_model(...)` + `bind_tools(tools)`**：把第 6 步四个 `@tool` 函数的 schema 注入 LLM。开启后，LLM 的响应里就可能带 `tool_calls`（见技术概念的「先观察」），而不再只是纯文本。
+- **`init_chat_model(...)` + `bind_tools(tools)`**：把模块 1 四个 `@tool` 函数的 schema 注入 LLM。开启后，LLM 的响应里就可能带 `tool_calls`（见技术概念的「先观察」），而不再只是纯文本。
 - **`ToolNode(tools)`**：替代第 2 步手写的 `get_time` 桩。它自动读上一条消息的 `tool_calls`，分发到对应工具、执行、把结果包成 `ToolMessage` 回灌——这就是「工具调用协议」的胶水，由 LangGraph 封装好。
 - **`add_conditional_edges("llm_call", should_continue, ...)`**：这是 agent 的**心脏**。`should_continue` 只看一眼最后一条消息——有 `tool_calls` 就跳到 `tool_node`，没有就到 `END`。对标 omp 探索代码库时的「搜索 → 读 → 再搜索」循环：何时停止完全由 LLM 在运行时决定，而非写死流程。
 - **`add_edge("tool_node", "llm_call")`**：工具执行完回到 LLM 再决策，形成 `llm_call ⇄ tool_node` 的循环。
 
-**为什么 `@retry` 包在 `llm_call` 而非 `init_chat_model` 上？** `init_chat_model(...)` 是工厂——只建一次客户端对象，建失败多半是配置错（重试也没用）；而 `llm_with_tools.invoke(...)` 是真正的网络调用，每轮都可能超时/断连，这才是该重试的对象。装饰器刚好套在「这一行调用」上——这正是第 5 步埋下的 `@retry` 与第 7 步图组装的衔接点。
+**为什么 `@retry` 包在 `llm_call` 而非 `init_chat_model` 上？** `init_chat_model(...)` 是工厂——只建一次客户端对象，建失败多半是配置错（重试也没用）；而 `llm_with_tools.invoke(...)` 是真正的网络调用，每轮都可能超时/断连，这才是该重试的对象。装饰器刚好套在「这一行调用」上——这正是第 5 步埋下的 `@retry` 与第 6 步图组装的衔接点。
 
 ```
 __start__ → llm_call ⇄ tool_node → __end__   （条件边 should_continue 控制循环与终止）
@@ -535,7 +431,7 @@ __start__ → llm_call ⇄ tool_node → __end__   （条件边 should_continue 
 
 ---
 
-## 第 8 步：Pydantic 数据模型 —— `api/schemas.py`
+## 第 7 步：Pydantic 数据模型 —— `api/schemas.py`
 
 现在进入 FastAPI 分层架构的 HTTP 层。首先定义请求与响应的数据模型。`schemas.py` 是 HTTP 层与外部世界的"契约"——它规定了每个接口接收什么、返回什么。
 
@@ -582,7 +478,7 @@ Pydantic 在这里的作用是**数据校验**：当请求体的 `question` 字�
 
 ---
 
-## 第 9 步：HTTP 路由 —— `api/routes.py`（4 个端点）
+## 第 8 步：HTTP 路由 —— `api/routes.py`（4 个端点）
 
 `routes.py` 是 HTTP 层的核心。它定义 4 个端点，把 HTTP 请求转发给业务层（图、文档工具、记忆）。
 
@@ -617,7 +513,7 @@ graph = build_graph()
 
 顺带呼应：每个端点上的 `@router.post("/query")`、`@router.get("/documents")` 正是第 5 步学过的**装饰器**——FastAPI 提供的版本。它接收下面的异步函数，把它注册成对应路径的 HTTP 接口。同一个 `@` 机制，既能挂路由（库提供），也能加重试（我们手写）。
 
-### 9.1 POST /api/query（SSE 流式输出）
+### 8.1 POST /api/query（SSE 流式输出）
 
 这是核心接口。前端通过 SSE（Server-Sent Events）接收逐步推送的回答。
 
@@ -650,7 +546,7 @@ def _sse(event_type: str, data: str = "") -> str:
 
 SSE（Server-Sent Events）是一种服务器向浏览器单向推送数据的协议。每条消息以 `data: ` 开头、以两个换行 `\n\n` 结尾。前端用 `ReadableStream` 逐块读取，实现"打字机"效果。
 
-### 9.2 POST /api/ingest（上传 PDF）
+### 8.2 POST /api/ingest（上传 PDF）
 
 ```python
 @router.post("/ingest", response_model=IngestResponse)
@@ -684,7 +580,7 @@ async def ingest(file: UploadFile = File(...)):
 - **职责分离**：`parse_pdf` 只做「PDF → 纯文本」提取（纯函数，便于单元测试）；`store_document` 只做「写入 MongoDB documents 集合」。两者解耦后，换存储后端（如换成对象存储）只需改 `store_document`，`parse_pdf` 不动。
 - **doc_id 由文件名派生**：`Path(file.filename).stem` 取主文件名作为文档唯一标识，与模块 1 的 `read_document(doc_id)`、`list_documents()` 保持一致。
 
-### 9.3 GET /api/documents（列出文档）
+### 8.3 GET /api/documents（列出文档）
 
 ```python
 @router.get("/documents", response_model=list[DocumentItem])
@@ -693,7 +589,7 @@ async def documents():
     return list_documents()
 ```
 
-### 9.4 POST /api/consolidate（触发 L2 记忆整合）
+### 8.4 POST /api/consolidate（触发 L2 记忆整合）
 
 ```python
 @router.post("/consolidate", response_model=ConsolidateResponse)
@@ -718,7 +614,7 @@ async def consolidate(req: ConsolidateRequest):
 
 ---
 
-## 第 10 步：瘦入口 —— `main.py` + CORS
+## 第 9 步：瘦入口 —— `main.py` + CORS
 
 `main.py` 是整个后端的入口，但它是"瘦"的——只做三件事：创建应用、配置 CORS、挂载路由。不含任何业务逻辑。
 
@@ -756,7 +652,7 @@ app.include_router(router)
 
 ---
 
-## 第 11 步：启动服务
+## 第 10 步：启动服务
 
 ```bash
 cd backend
@@ -801,9 +697,9 @@ curl -N -X POST http://localhost:8000/api/query \
 
 ---
 
-## 第 12 步：编写测试（pytest）
+## 第 11 步：编写测试（pytest）
 
-### 12.1 测试图逻辑
+### 11.1 测试图逻辑
 
 新建 `tests/test_graph.py`：
 
@@ -829,7 +725,7 @@ def test_graph_returns_answer():
 
 **观察 agent 的探索轨迹**：把 `result["messages"]` 逐条打印（或在服务端终端看日志），能看到 agent 的多轮决策——比如先 `list_papers` 看有哪些论文、再 `search_papers(pattern="dataset|corpus")` 定位、最后 `read_paper` 取证。故意问一个**跨论文**问题（如「对比语料库里两篇论文的数据集差异」），观察 agent 在多篇论文间反复跳转的探索路径——这正是 agentic search 区别于「读一篇全文」的核心。
 
-### 12.2 测试 API 接口
+### 11.2 测试 API 接口
 
 新建 `tests/test_api.py`，用 FastAPI 的 `TestClient`（无需真正启动服务器即可测试路由）：
 
