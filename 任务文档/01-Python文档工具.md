@@ -291,7 +291,7 @@ uv run python -c "import pymupdf; from pydantic_settings import BaseSettings; im
 
 在代码里写死 LLM 模型名（`"deepseek-v4-flash"`）或 MongoDB 连接地址（`"mongodb://localhost:27017"`）是常见的坏习惯。一旦这些值需要变动——比如换用另一个模型、把数据库迁移到远程服务器——就得翻遍代码逐处修改，极易遗漏。配置层的职责是把这些「会变、但不属于业务逻辑」的值集中到一处（`.env` 文件 + 配置对象），业务代码只引用配置对象、不接触具体值。
 
-本项目的配置项包括：LLM 模型名、MongoDB 连接地址与数据库名。其中 LLM 相关项在本模块先定义、由[模块 2](./02-LangGraph-Agent.md) 的 Agent 实际使用；MongoDB 配置则被本模块的文档服务（存取 Markdown）与[模块 4](./04-TMT记忆系统.md) 的记忆系统（存取 L1/L2 记忆）共同消费。
+本项目的配置项包括：LLM 模型名、MongoDB 连接地址与数据库名。其中 LLM 相关项在本模块先定义、由[模块 2](./02-LangGraph-Agent.md) 的 Agent 实际使用；MongoDB 配置则被本模块的文档服务（存取论文纯文本）与[模块 4](./04-TMT记忆系统.md) 的记忆系统（存取 L1/L2 记忆）共同消费。
 
 ### 2.1 创建 `.env.example` 配置模板
 
@@ -506,7 +506,7 @@ def list_documents() -> list[dict]:
 
 def read_document(doc_id: str) -> dict:
     """按 doc_id 读取一篇文档的完整记录。找不到则抛出 KeyError。"""
-    doc = _documents_collection.find_one({"doc_id": doc_id})
+    doc = _documents_collection.find_one({"doc_id": doc_id}, {"_id": 0})
     if doc is None:
         raise KeyError(f"文档不存在: {doc_id}")
     return doc
