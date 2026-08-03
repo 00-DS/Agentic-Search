@@ -29,7 +29,7 @@
 >   "message": {"role": "assistant", "content": null,
 >     "tool_calls": [{"id": "call_1", "type": "function",
 >       "function": {"name": "search_papers",
->         "arguments": "{\"pattern\": \"dataset|corpus\"}"}}]}}]}
+>         "arguments": "{\"pattern\": \"dataset|corpus\", \"doc_id\": \"paper_001\"}"}}]}}]}
 > ```
 > 注意 `arguments` 还是一段 **JSON 字符串**（不是字典），需要二次解析；`finish_reason` 决定了响应该怎么处理（`"tool_calls"` 走工具执行，`"stop"` 才是最终答案）。旧版本教过「`content` 是字符串、要 `json.loads` 二次解析」——同样的结构，观感重点从「解析 content」转到了「路由 tool_calls」。LangChain 的 `.invoke()` 会把上面这段解析成结构化的 `AIMessage(tool_calls=[...])`，你不必手写解析——这正是用框架而非裸 HTTP 的核心理由。
 
@@ -725,7 +725,7 @@ def test_graph_returns_answer():
     assert final.content   # 非空回答
 ```
 
-**观察 agent 的探索轨迹**：把 `result["messages"]` 逐条打印（或在服务端终端看日志），能看到 agent 的多轮决策——比如先 `list_papers` 看有哪些论文、再 `search_papers(pattern="dataset|corpus")` 定位、最后 `read_paper` 取证。故意问一个**跨论文**问题（如「对比语料库里两篇论文的数据集差异」），观察 agent 在多篇论文间反复跳转的探索路径——这正是 agentic search 区别于「读一篇全文」的核心。
+**观察 agent 的探索轨迹**：把 `result["messages"]` 逐条打印（或在服务端终端看日志），能看到 agent 的多轮决策——比如先 `list_papers` 看有哪些论文、再 `search_papers("dataset|corpus", doc_id="paper_001")` 定位、最后 `read_paper` 取证。故意问一个**跨论文**问题（如「对比语料库里两篇论文的数据集差异」），观察 agent 在多篇论文间反复跳转的探索路径——这正是 agentic search 区别于「读一篇全文」的核心。
 
 ### 11.2 测试 API 接口
 

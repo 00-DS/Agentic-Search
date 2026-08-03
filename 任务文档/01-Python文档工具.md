@@ -404,7 +404,7 @@ doc.close()
 
 > 现代导入写 `import pymupdf`（pymupdf ≥1.23.8 的官方推荐别名）。
 
-**为什么只提取纯文本、不做切分？** 切分是 agent 的职责。agent 用 `search_papers(pattern)` 正则搜索行号定位关键词，再用 `read_paper(doc_id, start_line, end_line)` 按行号取上下文——完全自主地决定读哪段。上传时预切分会把全文打散成固定片段，agent 被迫在预切的边界里搜索，失去了自主定位的灵活性。这与 omp 用 `grep` + `read` 探索代码库完全一致：文件以原始形态存在，agent 按需读取。
+**为什么只提取纯文本、不做切分？** 切分是 agent 的职责。agent 用 `search_papers(pattern, doc_id)` 正则搜索行号定位关键词，再用 `read_paper(doc_id, start_line, end_line)` 按行号取上下文——完全自主地决定读哪段。上传时预切分会把全文打散成固定片段，agent 被迫在预切的边界里搜索，失去了自主定位的灵活性。这与 omp 用 `grep` + `read` 探索代码库完全一致：文件以原始形态存在，agent 按需读取。
 
 **你需要实现的逻辑**：检查文件是否存在 → 打开 PDF → 逐页取 `get_text("text")` 拼接 → 关闭文档 → 返回完整字符串。以下是**教学示例，展示核心逻辑，非完整实现**：
 
@@ -481,7 +481,7 @@ def store_document(doc_id: str, filename: str, text: str) -> None:
 - **模块级连接**：`MongoClient(settings.mongo_uri)` 在模块被 import 时建立一次连接。PyMongo 的客户端内置连接池，多个 `insert_one` / `find_one` 复用同一连接，无需手动管理。
 - **`insert_one`**：向集合插入一条记录。若 `documents` 集合尚不存在，MongoDB 会在首次写入时自动创建——无需提前建表。
 - **`uploaded_at`**：记录上传时间。`datetime.now(timezone.utc)` 用带时区的 UTC 时间，避免不同服务器时区不一致导致的排序错误。
-- **schema：`{doc_id, filename, text, uploaded_at}`**：扁平文档，`text` 是完整纯文本。agent 经 `read_paper(doc_id, start_line, end_line)` 按行号取片段，或经 `search_papers(pattern)` 正则定位。
+- **schema：`{doc_id, filename, text, uploaded_at}`**：扁平文档，`text` 是完整纯文本。agent 经 `read_paper(doc_id, start_line, end_line)` 按行号取片段，或经 `search_papers(pattern, doc_id)` 正则定位。
 
 **验证**：先用 `parse_pdf` 提取一个 PDF 的文本，再调用 `store_document` 存入，然后打开 **MongoDB Compass** 查看 `agentic_search` 的 `documents` 集合——应能看到一条新记录，其 `text` 字段是完整纯文本。
 
@@ -576,21 +576,22 @@ def read_paper(doc_id: str, start_line: int = 1, end_line: int = 50) -> str:
 
 
 @tool
-def search_papers(pattern: str, doc_id: str = "") -> list[dict]:
-    """用正则表达式搜索论文内容，返回每个命中行 [{doc_id, line_number, line}]。
+def search_papers(pattern: str, doc_id: str) -> list[dict]:
+    """用正则表达式搜索指定论文内容，返回每个命中行 [{doc_id, line_number, line}]。
     pattern 是 Python 正则（如 'transformer|attention'），不是自然语言问题。
-    可选 doc_id 限定单篇搜索；省略则跨全部论文搜索。
+    doc_id 必填——先用 list_papers 查看可用论文，拿到 doc_id 后再调本工具。
     拿到命中行号后，用 read_paper 读取该位置附近的上下文。
     """
+    if not doc_id:
+        raise ValueError("doc_id 不能为空。请先调用 list_papers 获取可用的 doc_id。")
     regex = re.compile(pattern)
+    doc = _documents_collection.find_one({"doc_id": doc_id})
+    if doc is None:
+        raise KeyError(f"文档不存在: {doc_id}")
     hits = []
-    docs = [_documents_collection.find_one({"doc_id": doc_id})] if doc_id else list(_documents_collection.find({}))
-    for d in docs:
-        if d is None:
-            continue
-        for i, line in enumerate(d["text"].split("\n"), 1):
-            if regex.search(line):
-                hits.append({"doc_id": d["doc_id"], "line_number": i, "line": line})
+    for i, line in enumerate(doc["text"].split("\n"), 1):
+        if regex.search(line):
+            hits.append({"doc_id": doc_id, "line_number": i, "line": line})
     return hits
 
 
@@ -621,7 +622,7 @@ def extract_abstract(doc_id: str) -> str:
 |------|------|------|----------|
 | `list_papers` | `() -> list[dict]` | 语料库所有论文：`doc_id` + `filename`（**不带正文**） | `glob` |
 | `read_paper` | `(doc_id, start_line?, end_line?) -> str` | 指定行号范围的原始文本 | `read :50-100` |
-| `search_papers` | `(pattern, doc_id?) -> list[dict]` | 正则命中的 `doc_id`+`line_number`+`line` | `grep` |
+| `search_papers` | `(pattern, doc_id) -> list[dict]` | 正则命中的 `doc_id`+`line_number`+`line`（`doc_id` 必填） | `grep` |
 | `extract_abstract` | `(doc_id) -> str` | Abstract 段落（或未找到提示） | `summarizeCode()` |
 
 **为什么 `search_papers` 用正则、不用 embedding？** 这是对齐 omp `grep` 的核心决策。embedding/向量库会引入额外依赖、上传时做向量入库、让搜索结果不可解释。正则命中是人能读懂的精确匹配，智能来自 LLM 自主迭代构造正则——**正则匹配、零额外依赖、结果可解释**。
