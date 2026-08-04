@@ -388,9 +388,13 @@ def build_graph():
 
     # ② LLM：init_chat_model 接 DeepSeek（OpenAI 兼容接口），bind_tools 开启工具调用
     #    model / model_provider / base_url / api_key / timeout 全部从 config.py 读取，不硬编码
-    llm = init_chat_model(settings.llm_model, model_provider=settings.llm_model_provider,
-                          base_url=settings.llm_base_url, api_key=settings.llm_api_key,
-                          timeout=settings.llm_timeout)
+    llm = init_chat_model(
+        model = settings.llm_model,
+        model_provider = settings.llm_model_provider,
+        base_url = settings.llm_base_url,
+        api_key = settings.llm_api_key,
+        timeout = settings.llm_timeout
+    )
     llm_with_tools = llm.bind_tools(tools)
 
     # ③ llm_call：LLM 决策节点。第 5 步的 @retry 包在这里——
@@ -453,7 +457,7 @@ class IngestResponse(BaseModel):
     filename: str           # 原始文件名
 
 
-class DocumentItem(BaseModel):
+class DocumentResponse(BaseModel):
     """GET /api/documents 返回的单个文档。"""
     doc_id: str             # 文档 ID
     filename: str           # 文档名
@@ -498,7 +502,7 @@ from langchain_core.messages import HumanMessage
 from agentic_search.agents.graph import build_graph
 from agentic_search.services.documents import parse_pdf, list_documents, store_document
 from agentic_search.api.schemas import (
-    QueryRequest, IngestResponse, DocumentItem,
+    QueryRequest, IngestResponse, DocumentResponse,
     ConsolidateRequest, ConsolidateResponse,
 )
 
@@ -585,7 +589,7 @@ async def ingest(file: UploadFile = File(...)):
 ### 8.3 GET /api/documents（列出文档）
 
 ```python
-@router.get("/documents", response_model=list[DocumentItem])
+@router.get("/documents", response_model=list[DocumentResponse])
 async def documents():
     """列出已上传的文档。"""
     return list_documents()
