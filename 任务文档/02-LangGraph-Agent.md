@@ -248,11 +248,11 @@ uv run python hello_agent.py
 # configs/config.py —— 在模块 1 的 Settings 类中追加以下字段
 # （llm_model / mongo_url / mongo_db 已在模块 1 定义，不重复）
 
-    # Agent 调用 DeepSeek 专用
+    # Agent 调用 LLM 专用
+    llm_model_provider: str = "openai"                # init_chat_model 的 provider 参数，决定用哪个集成包
     llm_api_key: str = ""                              # API 密钥，写入 .env，勿提交到 Git
     llm_base_url: str = "https://api.deepseek.com"     # OpenAI 兼容接口地址
     llm_timeout: int = 60                              # 单次 LLM 调用超时（秒）
-```
 
 > `llm_model`（默认 `deepseek-v4-flash`）已在模块 1 定义，Agent 直接复用，不在此重复。
 
@@ -262,6 +262,7 @@ uv run python hello_agent.py
 
 ```text
 # backend/.env —— 追加 Agent 专用项（填入你自己的密钥）
+LLM_MODEL_PROVIDER=openai
 LLM_API_KEY=your-api-key-here
 LLM_BASE_URL=https://api.deepseek.com
 LLM_TIMEOUT=60
@@ -273,10 +274,10 @@ LLM_TIMEOUT=60
 
 ```bash
 cd backend
-uv run python -c "from agentic_search.configs.config import settings; print(settings.llm_base_url, settings.llm_timeout)"
+uv run python -c "from agentic_search.configs.config import settings; print(settings.llm_model, settings.llm_model_provider, settings.llm_base_url, settings.llm_timeout)"
 ```
 
-输出 `https://api.deepseek.com 60`（或你在 `.env` 中设置的值）即正确。
+输出 `deepseek-v4-flash openai https://api.deepseek.com 60`（或你在 `.env` 中设置的值）即正确。
 
 ---
 
@@ -386,7 +387,8 @@ def build_graph():
     tools = [list_papers, read_paper, search_papers, extract_abstract]
 
     # ② LLM：init_chat_model 接 DeepSeek（OpenAI 兼容接口），bind_tools 开启工具调用
-    llm = init_chat_model("deepseek-v4-flash", model_provider="openai",
+    #    model / model_provider / base_url / api_key / timeout 全部从 config.py 读取，不硬编码
+    llm = init_chat_model(settings.llm_model, model_provider=settings.llm_model_provider,
                           base_url=settings.llm_base_url, api_key=settings.llm_api_key,
                           timeout=settings.llm_timeout)
     llm_with_tools = llm.bind_tools(tools)
