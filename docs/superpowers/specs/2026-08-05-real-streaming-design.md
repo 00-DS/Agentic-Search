@@ -123,6 +123,10 @@ while (true) {
 | `任务文档/03-HTML前端.md` Step 5.2 | 前端从裸 append 字节改为 SSE 帧解析循环 |
 | `backend/src/agentic_search/api/routes.py` | 同步代码改动 |
 
+## 决策记录
+
+- **保留 langchain 主包**：`init_chat_model` 的 provider 工厂模式有教学价值。需补声明 `langchain-openai` 依赖（当前 pyproject.toml 缺失，`init_chat_model(model_provider="openai")` 会报 ImportError）。
+- **03 前端文档已由同事优化**（新增大量 HTML/JS 前置知识教学），但 Step 5.2 流式读取代码仍为旧版（裸 `textContent += decoder.decode(value)`，不解析 SSE 帧）。本 spec 只改 Step 5.1/5.2，不动前置知识部分。
 ## 验证标准
 
 ```bash
