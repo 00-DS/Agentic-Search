@@ -47,6 +47,10 @@
 
 **装饰器（decorator）** 是 Python 的语法机制：用 `@` 给函数或类「套一层额外逻辑」而不改写其本体，本质是接收函数、返回函数的高阶函数，`@` 只是语法糖。本模块在第 5 步手写一个**自定义装饰器** `@retry`（LLM 调用失败自动重试），第 8 步发现 FastAPI 的 `@router.post` 是库提供的装饰器；[模块 1](./01-Python文档工具.md) 的 LangChain `@tool` 与模块 4 的标准库 `@dataclass` 也是装饰器——同一个机制，既能挂路由、注册工具，也能加重试。
 
+**流式输出（Streaming）** 是服务器「边生成边发送」、客户端「边接收边显示」的数据传输方式，与「生成完毕再一次性返回」相对。LLM 生成回答需要数秒到数十秒——如果等整句话生成完再返回，用户面对一片空白等待很久；流式则让每个字在生成的瞬间就到达浏览器，用户看到文字逐字出现。本项目用 LangGraph 的 `graph.astream(stream_mode="messages")`：DeepSeek 每生成一个 token（文字的最小单位），LangGraph 就通过回调把它推出来，后端立即 yield 给浏览器——不等整句、不等整段、不等整个 ReAct 循环跑完。
+
+**SSE（Server-Sent Events）** 是一种服务器向浏览器单向推送数据的 HTTP 协议格式。每条事件由若干行组成：`event:` 行声明事件类型（可省略，省略时为默认事件），`data:` 行携带数据，事件之间以空行 `\n\n` 分隔。浏览器原生的 `EventSource` API 能自动解析 SSE 帧，但它只支持 GET 请求；本项目的提问接口是 POST（需要在请求体中发送问题），因此前端用 `fetch` + `ReadableStream.getReader()` 手动读取并解析 SSE 帧——这正是 ChatGPT、Claude.ai 等现代 AI 产品的做法。第 8 步的 `/api/query` 端点用 FastAPI 的 `StreamingResponse` 返回 `text/event-stream` 格式的 SSE 流。
+
 > 更多技术概念见 [概念速查](./概念速查.md)。
 
 ---
@@ -547,11 +551,9 @@ async def query(req: QueryRequest):
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 ```
 
-SSE（Server-Sent Events）是一种服务器向浏览器单向推送数据的 HTTP 协议格式。每条事件由若干行组成：`event:` 行声明事件类型（可省略，省略时为默认事件），`data:` 行携带数据，事件之间以空行 `\n\n` 分隔。
+上面的代码用 SSE 格式推送数据。SSE 协议与流式输出的概念已在开头的[技术概念](#技术概念)段介绍——这里只看这个端点具体怎么用。
 
 本项目用两种事件：文字 token 是默认事件（`data: "你"\n\n`），数据是 JSON 字符串值——`json.dumps` 转义了文字中的换行，防止 SSE 帧被撕裂；工具调用用命名事件（`event: tool\ndata: search_papers\n\n`），工具名是简单标识符，无需 JSON 包裹。流结束时后端关闭连接，前端 `reader.read()` 收到 `done: true` 即知结束——不需要单独的结束事件。
-
-**为什么用 `fetch` 而非 `EventSource` 消费 SSE？** 浏览器原生的 `EventSource` API 只支持 GET 请求，无法在请求体中发送问题内容。本项目用 POST 提交问题，因此用 `fetch` + `ReadableStream.getReader()` 手动读取并解析 SSE 帧——这正是 ChatGPT、Claude.ai 等现代 AI 产品的做法。
 
 ### 8.2 POST /api/ingest（上传 PDF）
 
