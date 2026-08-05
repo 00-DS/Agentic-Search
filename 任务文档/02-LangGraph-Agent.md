@@ -451,6 +451,11 @@ class QueryRequest(BaseModel):
     question: str           # 用户提问；读哪篇论文由 agent 自主决定
 
 
+class ConsolidateRequest(BaseModel):
+    """POST /api/consolidate 的请求体（模块 4 启用）。"""
+    session_id: str         # 会话 ID
+
+
 class IngestResponse(BaseModel):
     """POST /api/ingest 的响应。"""
     doc_id: str             # 分配的文档 ID
@@ -461,11 +466,6 @@ class DocumentResponse(BaseModel):
     """GET /api/documents 返回的单个文档。"""
     doc_id: str             # 文档 ID
     filename: str           # 文档名
-
-
-class ConsolidateRequest(BaseModel):
-    """POST /api/consolidate 的请求体（模块 4 启用）。"""
-    session_id: str         # 会话 ID
 
 
 class ConsolidateResponse(BaseModel):
@@ -497,7 +497,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessageChunk
 
 from agentic_search.agents.graph import build_graph
 from agentic_search.services.documents import parse_pdf, list_documents, store_document
@@ -528,29 +528,30 @@ graph = build_graph()
 async def query(req: QueryRequest):
     """向 Agent 提问，以 SSE 流式返回回答。读哪篇论文由 agent 自主决定。"""
     async def event_stream():
-        # 把用户提问包成 HumanMessage 交给 agent 图；agent 内部跑 ReAct 循环
-        # （llm_call ⇄ tool_node 多轮），最终把答案写在 messages 的最后一条
-        result = graph.invoke({
-            "messages": [HumanMessage(content=req.question)],
-        })
-        answer = result["messages"][-1].content
-
-        # 把最终回答分段推送（模拟逐字流式效果）
-        for i in range(0, len(answer), 20):
-            yield _sse("token", answer[i:i + 20])
-
-        yield _sse("done")
+        try:
+            async for chunk, metadata in graph.astream(
+                {"messages": [HumanMessage(content=req.question)]},
+                stream_mode="messages"
+            ):
+                if not isinstance(chunk, AIMessageChunk):
+                    continue                    # 跳过 ToolMessage 等非 LLM chunk
+                if chunk.content:               # 文字 token
+                    yield f"data: {json.dumps(chunk.content, ensure_ascii=False)}\n\n"
+                elif chunk.tool_call_chunks:     # LLM 决定调工具
+                    for tc in chunk.tool_call_chunks:
+                        if tc.get("name"):
+                            yield f"event: tool\ndata: {tc['name']}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps(f'[错误：{e}]', ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-
-def _sse(event_type: str, data: str = "") -> str:
-    """格式化一行 SSE 数据。"""
-    payload = {"type": event_type, "data": data}
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 ```
 
-SSE（Server-Sent Events）是一种服务器向浏览器单向推送数据的协议。每条消息以 `data: ` 开头、以两个换行 `\n\n` 结尾。前端用 `ReadableStream` 逐块读取，实现"打字机"效果。
+SSE（Server-Sent Events）是一种服务器向浏览器单向推送数据的 HTTP 协议格式。每条事件由若干行组成：`event:` 行声明事件类型（可省略，省略时为默认事件），`data:` 行携带数据，事件之间以空行 `\n\n` 分隔。
+
+本项目用两种事件：文字 token 是默认事件（`data: "你"\n\n`），数据是 JSON 字符串值——`json.dumps` 转义了文字中的换行，防止 SSE 帧被撕裂；工具调用用命名事件（`event: tool\ndata: search_papers\n\n`），工具名是简单标识符，无需 JSON 包裹。流结束时后端关闭连接，前端 `reader.read()` 收到 `done: true` 即知结束——不需要单独的结束事件。
+
+**为什么用 `fetch` 而非 `EventSource` 消费 SSE？** 浏览器原生的 `EventSource` API 只支持 GET 请求，无法在请求体中发送问题内容。本项目用 POST 提交问题，因此用 `fetch` + `ReadableStream.getReader()` 手动读取并解析 SSE 帧——这正是 ChatGPT、Claude.ai 等现代 AI 产品的做法。
 
 ### 8.2 POST /api/ingest（上传 PDF）
 
@@ -685,7 +686,7 @@ curl http://localhost:8000/api/documents
 curl -X POST http://localhost:8000/api/ingest \
   -F "file=@/path/to/your_paper.pdf"
 
-# ③ 提问（SSE 流式）—— -N 禁用缓冲，逐行看到流式输出；读哪篇论文由 agent 决定
+# ③ 提问（SSE 流式）—— -N 禁用缓冲，逐 token 看到流式输出；event: tool 行标记工具调用
 curl -N -X POST http://localhost:8000/api/query \
   -H "Content-Type: application/json" \
   -d '{"question": "这篇论文的核心方法是什么？"}'
@@ -700,7 +701,7 @@ curl -N -X POST http://localhost:8000/api/query \
 
 - `/api/documents` 返回文档列表（JSON 数组）。
 - `/api/ingest` 返回 `{"doc_id": "...", "filename": "..."}`。
-- `/api/query` 返回多行 SSE 数据（`data: {...}`），含 agent 基于论文内容的回答；服务端终端可看到 `[retry]` 重试日志与 agent 多轮工具调用（`list_papers`/`search_papers`/`read_paper`）的轨迹。
+- `/api/query` 返回 SSE 流：文字 token 逐个到达（`data: "..."` 行），`event: tool` 行标记工具调用；服务端终端可看到 `[retry]` 重试日志与 agent 多轮工具调用的轨迹。
 - 访问 `http://localhost:8000/docs` 可看到 FastAPI 自动生成的交互式 API 文档。
 
 ---
@@ -779,7 +780,7 @@ uv run pytest tests/ -v
 - [ ] `uv run uvicorn agentic_search.main:app --reload --port 8000` 成功启动
 - [ ] `curl http://localhost:8000/api/documents` 返回 JSON 列表
 - [ ] `curl -X POST .../api/ingest -F "file=@论文.pdf"` 返回 `doc_id` 与 `filename`
-- [ ] `curl -N -X POST .../api/query -d '{"question":"..."}'` 返回 SSE 流，含 agent 基于论文内容的回答（服务端终端可看到多轮工具调用日志）
+- [ ] `curl -N -X POST .../api/query -d '{"question":"..."}'` 返回 SSE 流，文字 token 逐个到达（非等待后一次性弹出），`event: tool` 行标记工具调用
 - [ ] 访问 `http://localhost:8000/docs` 能看到 4 个端点的交互式文档
 - [ ] `uv run pytest tests/ -v` 全部绿色
 
