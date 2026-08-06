@@ -9,7 +9,7 @@
 3. 用 `build_graph()` 把[模块 1](./01-Python文档工具.md) 的四个论文导航工具组装成一个 **ReAct 循环**——理解 agent 如何像 omp/hermes 用 `glob`/`read`/`grep` 自主探索代码库那样，探索论文语料库
 4. 理解 Python **装饰器（decorator）**：从手写自定义 `@retry`，到 LangChain `@tool`、FastAPI `@router`、标准库 `@dataclass`——认识 `@` 语法背后的高阶函数本质
 5. 用 **LangChain** 的 `init_chat_model` 调用 DeepSeek（替代旧版裸 `httpx`），理解**工具调用协议（tool calling）**为何让 agent 层必须引入框架
-6. 用 `uv run uvicorn` 启动 API 服务，并通过 `curl` 验证 SSE 流式 agent 问答
+6. 用 `uv run uvicorn` 启动 API 服务，并通过 `uv run python -c` 验证 SSE 流式 agent 问答
 
 ---
 
@@ -746,36 +746,48 @@ uv run uvicorn agentic_search.main:app --reload --port 8000
 - `--reload`：代码改动后自动重启，开发时常用。
 - `--port 8000`：监听 8000 端口。
 
-**验证——启动后用 curl 测试**（PowerShell 版）：
+**验证——启动后用 Python 测试**：
 
-> **三个 PowerShell 坑，逐个绕开：**
->
-> 1. **`curl` 是别名，要写 `curl.exe`**。在 PowerShell 里 `curl` 是 `Invoke-WebRequest` 的别名，语法与真 curl 完全不同，必须显式写 `curl.exe`。
-> 2. **续行用反引号 `` ` ``，不是反斜杠 `\`**。`` ` `` 在键盘 `1` 左边那个键。Bash 的 `\` 在 PowerShell 里不续行，会把命令拆成两条。
-> 3. **JSON 请求体要写进 UTF-8 文件，不能直接写在 `-d` 里**。PowerShell 传给 curl.exe 的内联参数会丢失 JSON 里的双引号；而且中文 Windows 的控制台默认是 GBK 编码（代码页 936），直接写在命令里的中文会被编码成 GBK 字节，服务端按 UTF-8 解码就乱码。把 JSON 写进一个 UTF-8 文件、用 `--data-binary @文件` 读取，两个问题一起解决。
+> **为什么不用 curl？** 在 PowerShell 里用 curl 有三个叠加的坑（`curl` 是别名、续行符不同、JSON body + 中文编码冲突）。用 `uv run python -c '...'` 直接走 httpx——同一个终端、同一个虚拟环境，引号和编码交给 Python 处理，干净利落。
 
-```powershell
+```bash
 # ① 列出文档（启动后应能访问，即使列表为空）
-curl.exe http://localhost:8000/api/documents
+uv run python -c '
+import httpx
+r = httpx.get("http://localhost:8000/api/documents")
+print(r.json())
+'
 
-# ② 上传一篇 PDF（替换为你本地的 PDF 文件路径）
-curl.exe -X POST http://localhost:8000/api/ingest `
-  -F "file=@/path/to/your_paper.pdf"
+# ② 上传一篇 PDF（把路径替换为你本地的 PDF）
+uv run python -c '
+import httpx
+files = {"file": ("paper.pdf", open("你的论文.pdf", "rb"), "application/pdf")}
+r = httpx.post("http://localhost:8000/api/ingest", files=files)
+print(r.json())
+'
 
-# ③ 提问（SSE 流式）——先把问题写进 UTF-8 文件，再用 --data-binary @文件 发送
-#    -N 禁用缓冲，逐 token 看到流式输出；event: tool 行标记工具调用
-$body = '{"question": "这篇论文的核心方法是什么？"}'
-[System.IO.File]::WriteAllText("$env:TEMP\q.json", $body, [System.Text.Encoding]::UTF8)
-curl.exe -N -X POST http://localhost:8000/api/query -H "Content-Type: application/json" --data-binary "@$env:TEMP\q.json"
+# ③ 提问（SSE 流式）——逐行读取，看到 data: 行就是文字 token、event: tool 行是工具调用
+#    timeout=60 因为 agent 要多轮调用工具才回答，默认 5 秒不够
+uv run python -c '
+import httpx
+with httpx.stream("POST", "http://localhost:8000/api/query", json={"question": "这篇论文的核心方法是什么？"}, timeout=60) as r:
+    for line in r.iter_lines():
+        if line:
+            print(line)
+'
 
 # ④ 跨论文提问——观察 agent 自主调 list_papers → search_papers → read_paper
-#    换个问题：改 $body 里的文字，重新 WriteAllText，再发同一条 curl 即可
-$body = '{"question": "对比语料库里两篇论文用了哪些不同的数据集？"}'
-[System.IO.File]::WriteAllText("$env:TEMP\q.json", $body, [System.Text.Encoding]::UTF8)
-curl.exe -N -X POST http://localhost:8000/api/query -H "Content-Type: application/json" --data-binary "@$env:TEMP\q.json"
+#    换个问题：改 json 里的文字，重发即可
+uv run python -c '
+import httpx
+with httpx.stream("POST", "http://localhost:8000/api/query", json={"question": "对比语料库里两篇论文用了哪些不同的数据集？"}, timeout=60) as r:
+    for line in r.iter_lines():
+        if line:
+            print(line)
+'
 ```
 
-> 命令 ③④ 走的是 `/api/query` 流式接口，会持续推送 SSE 事件直到 agent 回答完毕（连接关闭即结束）。想中途打断按 `Ctrl+C`。
+> 命令 ③④ 会持续打印 SSE 事件直到 agent 回答完毕（连接关闭即结束）。想中途打断按 `Ctrl+C`。
 
 **验证标准**：
 
@@ -858,9 +870,9 @@ uv run pytest tests/ -v
 
 - [ ] `uv run python -c "from agentic_search.agents.graph import build_graph"` 无报错
 - [ ] `uv run uvicorn agentic_search.main:app --reload --port 8000` 成功启动
-- [ ] `curl.exe http://localhost:8000/api/documents` 返回 JSON 列表
-- [ ] `curl.exe -X POST .../api/ingest -F "file=@论文.pdf"` 返回 `doc_id` 与 `filename`
-- [ ] 把问题写进 UTF-8 文件后，`curl.exe -N -X POST .../api/query -H "Content-Type: application/json" --data-binary "@$env:TEMP\q.json"` 返回 SSE 流，文字 token 逐个到达（非等待后一次性弹出），`event: tool` 行标记工具调用
+- [ ] `uv run python -c '...'`（httpx.get）访问 `/api/documents` 返回 JSON 列表
+- [ ] `uv run python -c '...'`（httpx.post files=）调用 `/api/ingest` 返回 `doc_id` 与 `filename`
+- [ ] `uv run python -c '...'`（httpx.stream）调用 `/api/query` 返回 SSE 流，文字 token 逐个到达（`data: "..."` 行），`event: tool` 行标记工具调用
 - [ ] 访问 `http://localhost:8000/docs` 能看到 4 个端点的交互式文档
 - [ ] `uv run pytest tests/ -v` 全部绿色
 
