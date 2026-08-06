@@ -1,25 +1,20 @@
-# SDD Progress Ledger
+# SDD Progress Ledger — Zero-Preprocessing Redesign
 
-Plan: docs/superpowers/plans/2026-07-30-pymupdf-replace-marker-docs.md
-Base: 4e10619
+Plan: docs/superpowers/plans/2026-08-03-zero-preprocessing.md
+Base: b87bd3f
+Final HEAD: 12c39ab
 
-Task 1: complete (commits 4e10619..1762eee, review clean, Approved)
-Task 2: complete (commits 1762eee..15d17f4 + fix be169b1, re-review Approved)
-Task 3: complete (commits be169b1..14dd10d + fix 7be5133 for 5 brief-missed residuals, file 01 verified clean)
-Task 4: complete (commits 7be5133..14ed841 review Approved + term-fix 8ae4255, file 03 clean)
-Task 5: complete (commits 8ae4255..3a75c8a, review Approved, file clean)
-Task 6: complete (commits 3a75c8a..1bf2be3 review Approved + term-fix e629c77, file clean)
-Task 7: complete (commits e629c77..b69696f, review Approved, file clean)
-Task 8: complete (commits b69696f..5c8a626, review Approved, file clean)
-Task 9: complete (commits 5c8a626..8dae40f, review Approved, file clean)
-Task 10: complete (global grep gate PASSED — all 7 checks clean, no fix commit needed)
+Task 1: complete (b87bd3f..c1dfb54, review clean, Approved)
+Task 2: complete (b87bd3f..178b039, review Approved + 2 fixes: 上下文/四个)
+Task 3: complete (b2652bb, review Approved, 0 Critical/Important)
+Final review: ✅ Ready to merge — all 7 acceptance criteria pass
+Post-review fix: markdown→text field consistency (12c39ab)
 
-ALL 10 TASKS COMPLETE. Final HEAD: 8dae40f
-Full range: 4e10619..8dae40f
-Final terminology alignment (01+概念速查): commit 3a0ea19, 15 line changes, field-name 'markdown' preserved.
-
-=== BRANCH COMPLETE ===
-All 10 tasks + final review + terminology alignment done.
-Final HEAD: 3a0ea19
-Full range: 4e10619..3a0ea19
-Pre-existing out-of-scope defects flagged (NOT fixed): 01:322 settings.mongo_url typo; 03:402 docs[0]['id'] vs doc_id mismatch.
+All 7 acceptance criteria:
+1. section/sections/section_id = 0 in .md files ✅
+2. get_text(dict)/标题启发式/span/block = 0 ✅
+3. list_sections/read_section/search_sections = 0 ✅
+4. Four new tools present (40 refs) ✅
+5. extract_abstract defined in 02 (10 refs) ✅
+6. parse_pdf uses get_text("text"), flat schema ✅
+7. No banned wording introduced by this plan ✅

@@ -1,67 +1,105 @@
-# Task 6 Report — `项目概览.md`
+# Task 6 Report — 跨文档同步（概念速查 + 项目概览 + 00-开始指南）
 
-**File modified:** `任务文档/项目概览.md` (single file)
-**Commit:** `1bf2be3` — `docs(项目概览): pymupdf, core->configs, db name agentic_search`
+## Status
 
-## Brief steps applied (all 10)
+✅ **Complete.** All three overview/reference docs synced from the linear-graph narrative to the
+agent paradigm (ReAct loop + tool calling + conditional edges), existing decorator cross-reference
+network preserved and strengthened, all committed together in one commit.
 
-| Step | Line(s) | Category | Result |
-|------|---------|----------|--------|
-| 1 | 116 | pymupdf (M1 desc) | ✅ `marker-pdf 转 Markdown` → `pymupdf 提取纯文本` |
-| 2 | 196 | pymupdf (data flow) | ✅ `marker-pdf → Markdown` → `pymupdf → 纯文本` |
-| 3 | 247 | pymupdf (tech stack row) | ✅ row rewritten |
-| 4 | 283 | pymupdf (further reading) | ✅ name + URL → pymupdf.readthedocs.io |
-| 5 | 27 | core→configs (slim tree) | ✅ `core/config.py` → `configs/config.py` |
-| 6 | 68–69 | core→configs (detail tree) | ✅ `├── core/` → `├── configs/` |
-| 7 | 97 | core→configs (module list) | ✅ `core/config.py` → `configs/config.py` |
-| 8 | 80–81 | db name (tree comments) | ✅ `agentic_search_db.*` → `agentic_search.*` |
-| 9 | 251 | db name (tech stack) | ✅ `agentic_search_db（…）` → `agentic_search（…）` |
-| 10 | 265 | db name (M3 verify) | ✅ `agentic_search_db.memories` → `agentic_search.memories` |
+## Commit
 
-All 10 applied verbatim. No mismatches between brief line numbers and actual content.
+- **`ffa5b12`** — `docs(sync): 概念速查/项目概览/00 同步 agent 范式（ReAct + 工具 + 条件边）`
+- 3 files, +136 / -85
+- `任务文档/概念速查.md` | 143 lines changed
+- `任务文档/项目概览.md` | 50 lines changed
+- `任务文档/00-开始指南.md` | 28 lines changed
+- Working tree clean for all three after commit. Pre-existing uncommitted decorator-network
+  changes (earlier-session work) were preserved and committed alongside the new agent-paradigm
+  sync — nothing discarded.
 
-## Post-fix grep sweeps (all must be 0)
+## What changed
 
-```
-$ grep -n "marker" 任务文档/项目概览.md
-(no matches)
+### 概念速查.md
+- **Agentic Search 条目**: removed the obsolete "128K 上下文窗口 / 整篇论文直接放入" rationale;
+  rewrote 为什么需要/本项目用法/理解示例 around on-demand agent exploration
+  (`list_sections` → `read_section` → `search_sections`), omp/Claude-Code analogy.
+- **LangGraph 条目**: rewrote from linear `analyze_intent → read_and_answer` to the ReAct loop
+  (`llm_call ⇄ tool_node` + 条件边 `should_continue`); added `bind_tools` / `ToolNode` /
+  `add_conditional_edges` and a ReAct-loop code example.
+- **新增 ReAct 条目** (inserted alphabetically before ReadableStream): defines ReAct + tool
+  calling, names all four tools, the omp/Claude-Code analogy, and the "search_sections 用正则、不用
+  embedding" stance. Carries the grep-required terms into this file.
+- **pymupdf 条目**: `get_text()` plain text → `get_text("dict")` structured → `{section_id,
+  title, level, text}` sections.
+- **MongoDB / Compass / 数据存储 条目**: documents schema `{markdown}` → `{sections}`; agent reads
+  via `read_section`/`read_document`.
+- **Pydantic 条目 + example**: `/api/query` body from `{question, doc_id}` → `{question}` only
+  (read-which-paper is now the agent's call).
+- **PyMongo / SSE 条目**: `read_and_answer` node → agent ReAct loop; added `read_section`.
+- **AJAX / DOM 操作 / HTML / fetch 条目**: removed stale frontend `loadDocuments()` / `#doc-list`
+  references (03 frontend no longer has a doc dropdown); fetch example body `{question, doc_id}`
+  → `{question}`.
+- **装饰器条目**: PRESERVED (定义/为什么需要/示例/延伸阅读 untouched). Only "本项目用法" updated
+  from 三处 → 四处 to add LangChain `@tool` (keeping it consistent with 02's four-decorator
+  teaching: `@retry`/`@tool`/`@router`/`@dataclass`). Pointer to 模块 2 第 5 步 retained.
+- **FastAPI 条目**: `@router` decorator teaching confirmed still valid — untouched.
 
-$ grep -n "agentic_search_db" 任务文档/项目概览.md
-(no matches)
+### 项目概览.md
+- **系统架构 mermaid**: `LangGraph Agent（读文档 + 回答）` → `ReAct Agent（llm_call ⇄ tool_node + 条件边）`.
+- **文件结构 tree + 各层职责**: `graph.py` described as ReAct agent + 4 tools + 条件边;
+  `documents.py` adds `read_section`; data comment "完整纯文本全文" → "论文章节正文（sections 数组）".
+- **M1 学习目标**: added "ReAct agent（工具调用 + 条件边）" alongside the preserved "装饰器（decorator）".
+- **M1 内容**: `parse_pdf` → `get_text("dict")` 切章节; module-2 graph described as ReAct agent.
+- **M2 app.js**: removed `loadDocuments()` from core functions (frontend no doc dropdown).
+- **API 设计表 + 前端示例**: `/api/query` body `{question, doc_id}` → `{question}`.
+- **数据流-提问流程**: `analyze_intent/read_and_answer` → ReAct loop
+  (`[ llm_call ⇄ tool_node ]` with the four tools).
+- **上传流程**: pymupdf → 章节数组; schema `{sections}`.
+- **技术栈表**: added LangChain row (`init_chat_model`/`bind_tools`); LangGraph row now "ReAct
+  agent 图（ToolNode + 条件边）"; pymupdf → 章节结构化提取; MongoDB → 论文章节. No chroma/embedding.
+- **验证 curl**: `/api/query` body dropped `doc_id`.
 
-$ grep -n "core/config|from agentic_search.core|agentic_search/core|├── core|│   core" 任务文档/项目概览.md
-(no matches)
-```
+### 00-开始指南.md
+- **学习路径 模块 2**: "LangGraph 编排「分析意图 → 读文档 → 回答」" → "搭一个 ReAct agent，LLM
+  自主调 list_papers/list_sections/read_section/search_sections 探索论文".
+- **项目简介 第 15 行**: "AI 阅读论文全文" → "AI 自主探索论文（先翻目录、再读相关章节）".
+- **「你将学到什么」表**: LangGraph row → "ReAct agent（工具调用 + 条件边）"; Python row "PDF → Markdown"
+  → "PDF → 章节文本"; module-1 path "可读的 Markdown" → "可读的章节文本".
+- **项目概述 / DeepSeek 配置**: confirmed still accurate, unchanged.
 
-All three sweeps return **0 matches** — file is clean.
+## Grep verification (Step 4-5) — all pass
 
-## Brief-missed refs (same-category sweep)
+| Check | Pattern | Result |
+|------|---------|--------|
+| 1 | `analyze_intent\|read_and_answer\|_read_first_document` | **0 matches** ✓ |
+| 2 | `chroma\|embedding\|向量库\|向量检索` | only **negation** ("不用 embedding"/"不用向量库") in 02 + 概念速查 ReAct entry ✓ |
+| 3 | `doc_id.*=.*""` | only the **`search_sections(pattern, doc_id="")` tool signature** — exactly the brief's expected "only tool signature" ✓ |
+| 4 | `读全文\|128K\|全文进.*窗口\|整篇.*窗口` | **no `128K` anywhere**; remaining `读全文` are negation/contrast ("不写死先读全文") or the `read_document` convenience helper ✓ |
+| 5 | `bind_tools\|ToolNode\|add_conditional_edges\|list_papers\|search_sections` | present in **02 + 概念速查 + 项目概览** ✓ |
 
-None. Every `marker`/`agentic_search_db`/`core` reference in this file was already covered by the 10 brief steps. No additional fixes needed.
+## Decorator cross-reference network (Step 5) — 5/5 intact
 
-## MongoDB doc URLs (databases-and-collections)
+1. 概念速查「装饰器」条目 → **02 第 5 步** (`@retry`) — line 67 延伸阅读 pointer retained ✓
+2. 02 技术概念段落 → 第 5 步 / 第 9 步 / 模块 4 — lines 48 + 374 ✓
+3. 02 第 5 步「插曲——什么是装饰器？」+ `@retry` — line 321 ✓
+4. 02 第 9 步 `@router` 呼应 — line 618 ✓
+5. 04 `@dataclass` 呼应 → 02 `@retry` — line 123 ✓
 
-Checked — this file contains **no** MongoDB documentation URLs containing `databases-and-collections`. The only external links are langgraph.com.cn, fastapi.tiangolo.com, pymupdf.readthedocs.io, github.com/TiMEM-AI, uv.oaix.tech, and mongodb.com download/product pages. Nothing to preserve or verify.
+Bonus: concept entry upgraded 三处→四处 to add LangChain `@tool`, matching 02's now-four-decorator
+learning objective. Strengthens rather than breaks the network.
 
-## Files changed
+## Concerns / Notes
 
-- `任务文档/项目概览.md` (newly tracked in this commit — git reported `+285 -0` because the file was previously untracked)
+- **`GET /api/documents` response row** in 项目概览 still shows `[{"id", "name"}]` (legacy field
+  names, not the project's doc_id/filename contract). Left unchanged — it pre-existed, is out of
+  the brief's explicit scope (brief targets only `/api/query`), the frontend no longer renders it,
+  and the agent's `list_papers` tool now consumes the endpoint. Flagging for a future consistency
+  pass.
+- **概念速查 pytest 条目** still has a `test_read_document_returns_markdown` illustration. It's a
+  generic pytest-syntax example, not a data-model claim; left as-is.
+- LF→CRLF git warnings on commit are harmless Windows line-ending normalization.
+- No backend code touched; scope held strictly to `任务文档/`.
 
-## Status: DONE
+## Report path
 
----
-
-## Fix-6: Markdown terminology → 纯文本 (2026-07-30)
-
-Follow-up to align 4 leftover `Markdown` references to `纯文本`, since pymupdf outputs plain text.
-
-**Commit:** `e629c77` — `docs(项目概览): align Markdown terminology to 纯文本 for pymupdf output`
-
-| # | Line | Before | After |
-|---|------|--------|-------|
-| 1 | 81  | `agentic_search.documents → 完整 Markdown 全文` | `agentic_search.documents → 完整纯文本全文` |
-| 2 | 122 | `文档工具（PDF 转 Markdown）` | `文档工具（PDF 提取纯文本）` |
-| 3 | 216 | `read_and_answer: 读 Markdown 全文 + LLM 回答` | `read_and_answer: 读纯文本全文 + LLM 回答` |
-| 4 | 251 | `记忆数据 + 完整 Markdown 文档存储` | `记忆数据 + 完整纯文本文档存储` |
-
-All 4 matched by surrounding text; no line-number mismatches. `grep "Markdown"` post-fix → 0 matches (lowercase `markdown:` field key on line 199 is a MongoDB schema field name, intentionally left untouched). Status: DONE.
+`D:/Python/Common/Agentic Search/.superpowers/sdd/task-6-report.md`

@@ -1,0 +1,277 @@
+diff --git a/任务文档/02-LangGraph-Agent.md b/任务文档/02-LangGraph-Agent.md
+index fcef09c..5229b44 100644
+--- a/任务文档/02-LangGraph-Agent.md
++++ b/任务文档/02-LangGraph-Agent.md
+@@ -6,7 +6,7 @@
+ 
+ 1. 理解 **LangGraph agent** 的四个核心概念：StateGraph（有向图容器）、Node（节点函数）、Edge（边），以及 agent 区别于固定流程的关键——**条件边**（`add_conditional_edges`）；认识到「没有条件边、没有循环的线性图」只是 agent 图的退化特例
+ 2. 用 `bind_tools` + `ToolNode` 构建 **ReAct 循环**：LLM 自主决定调用哪个工具、调用几次、何时认为「读够了」直接作答——而不是写死「先分析意图、再读全文」
+-3. 实现四个**论文导航工具**（`list_papers`/`list_sections`/`read_section`/`search_sections`），理解 agent 如何像 omp/hermes 用 `glob`/`read`/`grep` 自主探索代码库那样，探索论文语料库
++3. 实现**论文导航工具**（`list_papers`/`read_paper`/`search_papers`/`extract_abstract`），理解 agent 如何像 omp/hermes 用 `glob`/`read`/`grep` 自主探索代码库那样，探索论文语料库
+ 4. 理解 Python **装饰器（decorator）**：从手写自定义 `@retry`，到 LangChain `@tool`、FastAPI `@router`、标准库 `@dataclass`——认识 `@` 语法背后的高阶函数本质
+ 5. 用 **LangChain** 的 `init_chat_model` 调用 DeepSeek（替代旧版裸 `httpx`），理解**工具调用协议（tool calling）**为何让 agent 层必须引入框架
+ 6. 用 `uv run uvicorn` 启动 API 服务，并通过 `curl` 验证 SSE 流式 agent 问答
+@@ -17,7 +17,7 @@
+ 
+ **LangGraph** 是一个用有向图构建 Agent 工作流的框架。核心概念有四：StateGraph（有向图容器）、Node（处理步骤，本质是一个函数）、Edge（步骤间的连接），以及 **条件边**（`add_conditional_edges`）——根据状态动态选择下一个节点。数据（State）从起点 `START` 出发，经节点逐步处理，到达终点 `END`；每个节点接收当前状态、返回要更新的字段，LangGraph 自动合并。本模块的关键认知：**没有条件边、没有循环的线性图，只是 agent 图的退化特例**；真正的 agent 靠条件边实现「LLM 决策 → 执行工具 → 回到 LLM 再决策」的循环。
+ 
+-**ReAct agent**（Reasoning + Acting）是 LLM + 工具的循环：LLM 先「思考」该做什么，再「行动」调用一个工具，拿到结果后继续思考，直到认为信息足够、直接给出答案。它对标 omp/hermes 用 `read`/`grep`/`glob` 自主探索本地代码库——本项目的 agent 把这套能力换到了论文上，用 `list_papers`/`list_sections`/`read_section`/`search_sections` 自主探索论文语料库。路径完全由 LLM 在运行时决定：简单问题两步收工，跨论文对比可能走八九步。
++**ReAct agent**（Reasoning + Acting）是 LLM + 工具的循环：LLM 先「思考」该做什么，再「行动」调用一个工具，拿到结果后继续思考，直到认为信息足够、直接给出答案。它对标 omp/hermes 用 `read`/`grep`/`glob` 自主探索本地代码库——本项目的 agent 把这套能力换到了论文上，用 `list_papers`/`read_paper`/`search_papers`/`extract_abstract` 自主探索论文语料库。路径完全由 LLM 在运行时决定：简单问题两步收工，跨论文对比可能走八九步。
+ 
+ **工具调用协议（tool calling）** 是 ReAct 循环的运转机制。开启工具调用后，LLM 不再只返回文本，而是在响应里返回结构化的 `tool_calls`（函数名 + 参数 JSON）；LangGraph 的 `ToolNode` 解析这些调用、执行对应工具，把结果包装成 `ToolMessage` 回灌给 LLM；LLM 看到工具结果后再次决策——调下一个工具，还是直接回答。`bind_tools`/`ToolNode`/条件边封装了这整套胶水。
+ 
+@@ -28,7 +28,7 @@
+ > {"choices": [{"index": 0, "finish_reason": "tool_calls",
+ >   "message": {"role": "assistant", "content": null,
+ >     "tool_calls": [{"id": "call_1", "type": "function",
+->       "function": {"name": "search_sections",
++>       "function": {"name": "search_papers",
+ >         "arguments": "{\"pattern\": \"dataset|corpus\"}"}}]}}]}
+ > ```
+ > 注意 `arguments` 还是一段 **JSON 字符串**（不是字典），需要二次解析；`finish_reason` 决定了响应该怎么处理（`"tool_calls"` 走工具执行，`"stop"` 才是最终答案）。旧版本教过「`content` 是字符串、要 `json.loads` 二次解析」——同样的结构，观感重点从「解析 content」转到了「路由 tool_calls」。LangChain 的 `.invoke()` 会把上面这段解析成结构化的 `AIMessage(tool_calls=[...])`，你不必手写解析——这正是用框架而非裸 HTTP 的核心理由。
+@@ -81,10 +81,10 @@ graph TD
+ ```mermaid
+ graph LR
+     Start["__start__"] --> LLM["llm_call<br/>LLM 决策：调工具 or 回答"]
+-    LLM -->|"返回 tool_calls"| Tool["tool_node<br/>执行工具（read_section 等）"]
++    LLM -->|"返回 tool_calls"| Tool["tool_node<br/>执行工具（read_paper 等）"]
+     Tool -->|"ToolMessage 回灌"| LLM
+     LLM -->|"无 tool_calls（读够了）"| End["__end__"]
+-    Tool -.->|"调用"| Docs["services/documents.py<br/>list_documents / read_section"]
++    Tool -.->|"调用"| Docs["services/documents.py<br/>list_documents / read_document"]
+     subgraph ReAct 循环
+         LLM
+         Tool
+@@ -97,7 +97,7 @@ graph LR
+ 
+ ## 前置条件
+ 
+-- 已完成 [模块 1：Python 文档工具](./01-Python文档工具.md)——`services/documents.py` 中的 `parse_pdf`（返回 sections 数组）、`store_document`、`list_documents`、`read_document`、`read_section` 已实现且测试通过
++- 已完成 [模块 1：Python 文档工具](./01-Python文档工具.md)——`services/documents.py` 中的 `parse_pdf`（返回完整纯文本）、`store_document`、`list_documents`、`read_document` 已实现且测试通过
+ - 后端已执行第 1 步的 `uv add`，`langgraph` / `langchain` / `langchain-openai` 等依赖安装完毕
+ - 有可用的 DeepSeek API Key，写入 `backend/.env` 文件
+ 
+@@ -105,12 +105,13 @@ graph LR
+ 
+ ## 核心设计
+ 
+-本模块的 Agent 不写死「先读全文再回答」，而是一个 **ReAct 循环**：LLM 拿到问题后，自主决定调用哪个论文导航工具、调用几次、何时认为证据足够、直接作答。它对标 omp/hermes 探索本地代码库的能力——`list_papers` 相当于 `glob`（看有哪些论文），`read_section` 相当于 `read`（取章节片段），`search_sections` 相当于 `grep`（正则定位），对象从代码换成了论文。
++本模块的 Agent 不写死「先读全文再回答」，而是一个 **ReAct 循环**：LLM 拿到问题后，自主决定调用哪个论文导航工具、调用几次、何时认为证据足够、直接作答。它对标 omp/hermes 探索本地代码库的能力——`list_papers` 相当于 `glob`（看有哪些论文），`read_paper` 相当于 `read :50-100`（按行号取片段），`search_papers` 相当于 `grep`（正则定位行号），`extract_abstract` 相当于 `summarizeCode()`（读取时的概览便利），对象从代码换成了论文。
+ 
+-两个逼出 agentic 行为的设计约束：
++三个逼出 agentic 行为的设计约束：
+ 
+-1. **没有「读整篇论文」的工具**。agent 必须先 `list_sections` 看目录，再 `read_section` 逐章取——这是「按需取片段」的强约束，既逼出真正的多轮探索，也是多论文场景下不撑爆上下文窗口的根本保障。
+-2. **`search_sections` 用正则、不用 embedding**。对齐 omp `grep`：参数是正则 `pattern`（不是语义 query），返回命中片段 + 上下文。智能来自 LLM 自主迭代构造正则——先搜宽泛词（如 `dataset|corpus|benchmark`），看结果再搜更精确的词，逐步逼近。**不用向量库、不做 embedding**——这是 agentic search 与旧时代 RAG 的根本区别。
++1. **没有「读整篇论文」的工具**。agent 必须先 `search_papers` 定位行号、再 `read_paper` 按行号取片段——这是「按需取片段」的强约束，既逼出真正的多轮探索，也是多论文场景下不撑爆上下文窗口的根本保障。
++2. **`search_papers` 用正则、不用 embedding**。对齐 omp `grep`：参数是正则 `pattern`（不是语义 query），返回命中行+行号+上下文。智能来自 LLM 自主迭代构造正则。**不用向量库、不做 embedding。**
++3. **`extract_abstract` 是读取时工具，不是上传预处理**。对齐 omp 的 `summarizeCode()`：agent 按需调用，从完整文本里正则提取 abstract 段落。不在上传时预计算。
+ 
+ ---
+ 
+@@ -140,7 +141,7 @@ backend/src/agentic_search/
+ │   └── store.py         # 模块 4 实现：L1/L2 记忆
+ └── services/
+     ├── __init__.py
+-    └── documents.py     # 模块 1 已实现：parse_pdf / list_documents / read_document / read_section
++    └── documents.py     # 模块 1 已实现：parse_pdf 转纯文本 / list / read_document
+ ```
+ 
+ **设计说明——为什么要"包化"？**
+@@ -367,7 +368,7 @@ def _call_llm(messages):
+ 
+ ## 第 6 步：论文导航工具集
+ 
+-这是 agent 的「手和眼」——四个工具，对标 omp 探索代码库的 `glob`/`read`/`grep`。用 LangChain 的 `@tool` 装饰器声明：装饰器会从函数的**类型注解 + docstring** 自动生成工具 schema，告诉 LLM「这个工具叫什么、接收什么参数、干什么」——这正是第 5 步装饰器概念的又一次「点亮」。
++这是 agent 的「手和眼」——四个工具，对标 omp 探索代码库的 `glob`/`read`/`grep`/`summarize`。用 LangChain 的 `@tool` 装饰器声明：装饰器会从函数的**类型注解 + docstring** 自动生成工具 schema，告诉 LLM「这个工具叫什么、接收什么参数、干什么」——这正是第 5 步装饰器概念的又一次「点亮」。
+ 
+ 新建 `agents/tools.py`：
+ 
+@@ -376,18 +377,16 @@ def _call_llm(messages):
+ import re
+ from langchain.tools import tool
+ from agentic_search.services.documents import (
+-    list_documents, read_section as _read_section, _documents_collection,
++    list_documents, read_document, _documents_collection,
+ )
+ 
+ 
+-def _get_doc(doc_id: str) -> dict:
+-    """按 doc_id 取出整篇文档记录（含 sections 数组）。找不到抛 KeyError。
+-    教学示例直接查询集合；正式实现可在 services/documents.py 暴露 get_sections 等公共函数。
+-    """
++def _get_doc_text(doc_id: str) -> str:
++    """按 doc_id 取出整篇文档的完整文本。找不到抛 KeyError。"""
+     doc = _documents_collection.find_one({"doc_id": doc_id})
+     if doc is None:
+         raise KeyError(f"文档不存在: {doc_id}")
+-    return doc
++    return doc["text"]
+ 
+ 
+ @tool
+@@ -395,46 +394,57 @@ def list_papers() -> list[dict]:
+     """列出语料库中所有论文。返回 [{doc_id, filename}]，不带正文。
+     对标 omp 的 glob：只列有哪些文件，不返回内容——判断相关性靠后续自主探索。
+     """
+-    return [{"doc_id": d["doc_id"], "filename": d["filename"]} for d in list_documents()]
+-
+-
+-@tool
+-def list_sections(doc_id: str) -> list[dict]:
+-    """列出一篇论文的目录（章节标题与层级）。返回 [{section_id, title, level}]。
+-    论文特有工具：因为论文有章节结构，agent 先看目录再决定读哪一章。
+-    """
+-    doc = _get_doc(doc_id)
+-    return [{"section_id": s["section_id"], "title": s["title"], "level": s["level"]}
+-            for s in doc["sections"]]
++    return list_documents()
+ 
+ 
+ @tool
+-def read_section(doc_id: str, section_id: int) -> str:
+-    """读取指定论文的指定章节正文。对标 omp 的 read：按范围取内容。
+-    底层调用模块 1 的 services/documents.read_section。
++def read_paper(doc_id: str, start_line: int = 1, end_line: int = 50) -> str:
++    """读取指定论文的指定行号范围。返回原始文本行。
++    对标 omp 的 read :50-100：按行号取片段，而不是返回全文。
+     """
+-    return _read_section(doc_id, section_id)
++    text = _get_doc_text(doc_id)
++    lines = text.split("\n")
++    # 行号是 1-indexed，列表是 0-indexed
++    return "\n".join(lines[start_line - 1 : end_line])
+ 
+ 
+ @tool
+-def search_sections(pattern: str, doc_id: str = "") -> list[dict]:
+-    """跨语料库（或指定论文）用正则搜索章节内容。返回 [{doc_id, section_id, snippet}]。
++def search_papers(pattern: str, doc_id: str = "") -> list[dict]:
++    """跨语料库（或指定论文）用正则搜索内容。返回 [{doc_id, line_number, line, snippet}]。
+     对标 omp 的 grep：参数是正则 pattern（不是语义 query），命中后 agent 通常再调
+-    read_section 深入——搜索只给位置和片段，不给全文。
++    read_paper 按行号深入——搜索只给位置和片段，不给全文。
+     """
+     regex = re.compile(pattern)
+     hits = []
+-    docs = [_get_doc(doc_id)] if doc_id else list(_documents_collection.find({}))
++    docs = [_documents_collection.find_one({"doc_id": doc_id})] if doc_id else list(_documents_collection.find({}))
+     for d in docs:
+-        for s in d["sections"]:
+-            m = regex.search(s["text"])
+-            if m:
+-                start = max(0, m.start() - 40)
+-                snippet = s["text"][start:m.end() + 40]
+-                hits.append({"doc_id": d["doc_id"],
+-                             "section_id": s["section_id"],
+-                             "snippet": snippet})
++        if d is None:
++            continue
++        for i, line in enumerate(d["text"].split("\n"), 1):
++            if regex.search(line):
++                hits.append({"doc_id": d["doc_id"], "line_number": i, "line": line})
+     return hits
++
++
++@tool
++def extract_abstract(doc_id: str) -> str:
++    """提取论文的 Abstract 段落。agent 按需调用，快速判断论文是否相关。
++    对标 omp 的 summarizeCode()：读取时的概览便利，不是上传预处理。
++    """
++    text = _get_doc_text(doc_id)
++    lines = text.split("\n")
++    for i, line in enumerate(lines):
++        if line.strip().lower() == "abstract":          # "abstract" 独立成段才算数
++            # 收集其下方第一个非空自然段
++            for j in range(i + 1, len(lines)):
++                para = lines[j].strip()
++                if para:                                  # 找到非空行，收集到空行为止
++                    end = j + 1
++                    while end < len(lines) and lines[end].strip():
++                        end += 1
++                    return "\n".join(lines[j:end])
++            return "Abstract 标题下方无内容"
++    return "未找到独立 Abstract 段落"
+ ```
+ 
+ 四工具与 omp 的对应关系：
+@@ -442,22 +452,22 @@ def search_sections(pattern: str, doc_id: str = "") -> list[dict]:
+ | 工具 | 签名 | 返回 | 对应 omp |
+ |------|------|------|----------|
+ | `list_papers` | `() -> list[dict]` | 语料库所有论文：`doc_id` + `filename`（**不带正文**） | `glob` |
+-| `list_sections` | `(doc_id) -> list[dict]` | 一篇论文的目录：`section_id` + `title` + `level` | 论文特有 |
+-| `read_section` | `(doc_id, section_id) -> str` | 该章节正文 | `read` |
+-| `search_sections` | `(pattern, doc_id?) -> list[dict]` | 正则命中的 `doc_id`+`section_id`+`snippet` | `grep` |
++| `read_paper` | `(doc_id, start_line?, end_line?) -> str` | 指定行号范围的原始文本 | `read :50-100` |
++| `search_papers` | `(pattern, doc_id?) -> list[dict]` | 正则命中的 `doc_id`+`line_number`+`line` | `grep` |
++| `extract_abstract` | `(doc_id) -> str` | Abstract 段落（或未找到提示） | `summarizeCode()` |
+ 
+-**为什么 `search_sections` 用正则、不用 embedding？** 这是对齐 omp `grep` 的核心决策，也是 agentic search 与旧时代 RAG 的根本区别。embedding/向量库会：① 引入额外的 embedding 模型依赖与首次下载；② 上传时对每个 section 做向量入库的额外流程；③ 让搜索结果受模型质量制约、不可解释。正则命中是人能读懂的精确匹配，智能来自 LLM 自主迭代构造正则（先搜 `dataset|corpus|benchmark`，看结果再逼近），不是预计算的语义相似度。本项目严格对齐 omp 范式——**正则匹配、零额外依赖、结果可解释**。
++**为什么 `search_papers` 用正则、不用 embedding？** 这是对齐 omp `grep` 的核心决策，也是 agentic search 与旧时代 RAG 的根本区别。embedding/向量库会：① 引入额外的 embedding 模型依赖与首次下载；② 上传时对每段文本做向量入库的额外流程；③ 让搜索结果受模型质量制约、不可解释。正则命中是人能读懂的精确匹配，智能来自 LLM 自主迭代构造正则（先搜 `dataset|corpus|benchmark`，看结果再逼近），不是预计算的语义相似度。本项目严格对齐 omp 范式——**正则匹配、零额外依赖、结果可解释**。
+ 
+-**为什么 `list_papers` 不带摘要？** 对齐 omp `glob` 只返回路径。判断论文相关性靠 agent **自主探索**：先 `list_papers` 看 `filename`（通常含标题/作者），再对感兴趣的 `list_sections` 看目录，再 `read_section`。不在上传时预计算 LLM 摘要——那会引入额外的一次 LLM 调用且摘要质量不可控；让 agent 自己读章节标题判断相关性更可靠、更 agentic。
++**为什么 `extract_abstract` 是工具、不是上传预处理？** 对齐 omp 的 `summarizeCode()`：它是**读取时的可选便利**，agent 按需调用，不是入库步骤。上传时只做格式转换（PDF → 纯文本），不做任何内容分析。提取逻辑也极简：从头找第一个独立成段的 "abstract" 行，取其下方第一个非空自然段。鲁棒性靠一个检查保证——只有 "abstract" 单独占一行才算数（排除 "In this abstract, we..." 这类误命中）。
+ 
+ **验证**：
+ 
+ ```bash
+ cd backend
+-uv run python -c "from agentic_search.agents.tools import list_papers, list_sections, read_section, search_sections; print([t.name for t in [list_papers, list_sections, read_section, search_sections]])"
++uv run python -c "from agentic_search.agents.tools import list_papers, read_paper, search_papers, extract_abstract; print([t.name for t in [list_papers, read_paper, search_papers, extract_abstract]])"
+ ```
+ 
+-看到四个工具名即正确（`@tool` 装饰器把它们注册成了带 schema 的工具对象）。
++看到四个工具名即正确。
+ 
+ ---
+ 
+@@ -471,13 +481,13 @@ from langchain.chat_models import init_chat_model
+ from langgraph.prebuilt import ToolNode
+ from langgraph.graph import StateGraph, START, END
+ from agentic_search.configs.config import settings
+-from agentic_search.agents.tools import list_papers, list_sections, read_section, search_sections
++from agentic_search.agents.tools import list_papers, read_paper, search_papers, extract_abstract
+ 
+ 
+ def build_graph():
+     """组装 ReAct agent 图：llm_call ⇄ tool_node 循环，条件边控制终止。"""
+     # ① 工具集（第 6 步定义）
+-    tools = [list_papers, list_sections, read_section, search_sections]
++    tools = [list_papers, read_paper, search_papers, extract_abstract]
+ 
+     # ② LLM：init_chat_model 接 DeepSeek（OpenAI 兼容接口），bind_tools 开启工具调用
+     llm = init_chat_model("deepseek-v4-flash", model_provider="openai",
+@@ -776,7 +786,7 @@ curl -N -X POST http://localhost:8000/api/query \
+   -H "Content-Type: application/json" \
+   -d '{"question": "这篇论文的核心方法是什么？"}'
+ 
+-# ④ 跨论文提问——观察 agent 自主调 list_papers → search_sections → read_section
++# ④ 跨论文提问——观察 agent 自主调 list_papers → search_papers → read_paper
+ curl -N -X POST http://localhost:8000/api/query \
+   -H "Content-Type: application/json" \
+   -d '{"question": "对比语料库里两篇论文用了哪些不同的数据集？"}'
+@@ -786,7 +796,7 @@ curl -N -X POST http://localhost:8000/api/query \
+ 
+ - `/api/documents` 返回文档列表（JSON 数组）。
+ - `/api/ingest` 返回 `{"doc_id": "...", "filename": "..."}`。
+-- `/api/query` 返回多行 SSE 数据（`data: {...}`），含 agent 基于论文内容的回答；服务端终端可看到 `[retry]` 重试日志与 agent 多轮工具调用（`list_papers`/`search_sections`/`read_section`）的轨迹。
++- `/api/query` 返回多行 SSE 数据（`data: {...}`），含 agent 基于论文内容的回答；服务端终端可看到 `[retry]` 重试日志与 agent 多轮工具调用（`list_papers`/`search_papers`/`read_paper`）的轨迹。
+ - 访问 `http://localhost:8000/docs` 可看到 FastAPI 自动生成的交互式 API 文档。
+ 
+ ---
+@@ -811,13 +821,13 @@ def test_graph_returns_answer():
+         "question": "这篇论文的核心方法是什么？",
+     })
+ 
+-    # agent 的多轮探索（list_papers → read_section → ...）都累加进 messages，
++    # agent 的多轮探索（list_papers → read_paper → ...）都累加进 messages，
+     # 最后一条是它认为「读够了」后给出的最终 AIMessage
+     final = result["messages"][-1]
+     assert final.content   # 非空回答
+ ```
+ 
+-**观察 agent 的探索轨迹**：把 `result["messages"]` 逐条打印（或在服务端终端看日志），能看到 agent 的多轮决策——比如先 `list_papers` 看有哪些论文、再 `search_sections(pattern="dataset|corpus")` 定位、最后 `read_section` 取证。故意问一个**跨论文**问题（如「对比语料库里两篇论文的数据集差异」），观察 agent 在多篇论文间反复跳转的探索路径——这正是 agentic search 区别于「读一篇全文」的核心。
++**观察 agent 的探索轨迹**：把 `result["messages"]` 逐条打印（或在服务端终端看日志），能看到 agent 的多轮决策——比如先 `list_papers` 看有哪些论文、再 `search_papers(pattern="dataset|corpus")` 定位、最后 `read_paper` 取证。故意问一个**跨论文**问题（如「对比语料库里两篇论文的数据集差异」），观察 agent 在多篇论文间反复跳转的探索路径——这正是 agentic search 区别于「读一篇全文」的核心。
+ 
+ ### 12.2 测试 API 接口
+ 

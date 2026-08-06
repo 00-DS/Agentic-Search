@@ -13,9 +13,14 @@ class Settings(BaseSettings):
     )
 
     llm_model: str = "mimo-v2.5"
-    llm_timeout: int = 30
+    llm_model_provider: str = "openai"
+    llm_base_url: str = "https://token-plan-cn.xiaomimimo.com/v1"
+    llm_api_key: str = ""
+    llm_timeout: int = 60
+
 
     mongo_url: str = "mongodb://localhost:27017"
     mongo_db: str = "agentic_search"
 
 settings = Settings()
+# 基类

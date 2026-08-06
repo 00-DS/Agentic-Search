@@ -1,93 +1,53 @@
-# Task 3 Report — `01-Python文档工具.md`
+# Task 3 Report — 全局同步（概念速查 / 项目概览 / 00-开始指南）
 
-**Status:** DONE_WITH_CONCERNS
+## Status
+✅ Complete. All 15 brief steps applied + 3 brief-implicit fixes. Committed.
 
-## Summary
+## Commit
+`b2652bb55b1b81976160bd454a06fe7c9b873b10`
+Message: `docs(全局同步): 工具名/schema 统一——list_papers/read_paper/search_papers/extract_abstract`
+Diff: 3 files changed, +34 −34.
 
-Applied all 19 brief edits (Steps 1–19) to `任务文档/01-Python文档工具.md` covering three structural fixes: (1) uv-init command now passes the package name, (2) `core/` → `configs/` rename, (3) database name `agentic_search_db` → `agentic_search`. The brief's **hard** verification requirements all PASS. However, several stale references the brief did **not** list remain in the file (flagged below as concerns — they were out of scope for this task and "Make NO other edits" was explicit).
+## Verification (grep gate — PASSED)
+Searched all 3 files for `list_sections | read_section | search_sections | section_id | get_text(.*dict) | sections`:
+**0 matches.** No old tool names, no `section_id`, no `get_text("dict")`, no `sections` array.
 
-## Edits Applied (all 19 successful, verbatim)
+Positive check confirmed new tokens present everywhere: `read_paper` / `search_papers` / `extract_abstract` / `get_text("text")` / `text, uploaded_at`.
 
-- **Steps 1–3 (uv init, §1.1):** Rewrote §1.1 to `uv init --lib agentic-search` + `mv agentic-search backend`. Reworded the §1.3 lead-in (removed the "change package name" instruction). Reworded the default-name note. *(Note: on the first pass Step 2 left a redundant opening sentence; corrected immediately — line 181 now matches the brief's 改为 exactly.)*
-- **Step 4:** flat-vs-src tree `├── core/config.py` → `├── configs/config.py` (line 36).
-- **Step 5:** learning objective #3 `core/config.py` → `configs/config.py` (line 13).
-- **Step 6:** 产出说明 `core/config.py` → `configs/config.py` (line 17).
-- **Step 7:** §1.5 subdir description `core/` → `configs/` (line 241).
-- **Step 8:** §步骤2 heading `core/config.py` → `configs/config.py` (line 253).
-- **Step 9:** §2.2 heading `core/config.py` → `configs/config.py` (line 283).
-- **Step 10:** import-path mention `from agentic_search.core.config` → `from agentic_search.configs.config` (line 317).
-- **Step 11:** store_document sample import (line 436).
-- **Step 12:** tech-concept db name → `agentic_search` (line 60).
-- **Step 13:** §3.2 术语 db name (line 428).
-- **Step 14:** §3.2 验证 db name **and** `# 标题结构` → `纯文本全文` (line 464).
-- **Step 15:** 预期输出 db name (line 325).
-- **Step 16:** 集成验证 db name only (line 664) — *intentionally keeps `# 标题结构` per the brief, which listed only the db-name change for this line.*
-- **Step 17:** 完成检查 db name (line 675).
-- **Step 18a:** checklist `marker-pdf` → `pymupdf` (line 672).
-- **Step 18b:** checklist path `core/config.py` → `configs/config.py` (line 673).
-- **Step 18c:** import-verify command `from agentic_search.core.config` → `from agentic_search.configs.config` (line 681).
-- **Step 19:** 下一步 summary `core/config.py` → `configs/config.py` (line 765).
+## Summary of changes
 
-No mismatches against brief text. (Brief line numbers were stale vs. the post-Tasks-1/2 file, so each target was matched by surrounding content per the task instructions.)
+### 概念速查.md (Steps 1–7 + extras)
+- L11 (Step 1): exploration tools → `search_papers` → `read_paper` → `extract_abstract`.
+- L13 (Step 1): four-tool list → `list_papers`/`read_paper`/`search_papers`/`extract_abstract`.
+- L198–206 (Step 2): full pymupdf entry replaced — `get_text("text")` flat text, no sectioning; agent uses `read_paper`/`search_papers`.
+- L214/216/218 (Step 3 + siblings): MongoDB entry — schema `{_id, doc_id, filename, text, uploaded_at}`, `text` = 完整纯文本; cleaned `前端不再` → `前端不`.
+- L228/230 (Step 4 + sibling): Compass entry — `{doc_id, filename, text, uploaded_at}`.
+- L268 (Step 5): PyMongo entry — `read_document()` returns `text` 完整纯文本; dropped `read_section`.
+- L316/318 (Step 6): ReAct entry — tool set + typical trajectory use new names.
+- L164–192 (Step 7): LangGraph entry checked — no specific tool names, no change needed.
+- L430/432/434/441/442 (**brief-implicit**): 数据存储 entry contained `section_id`/`read_section`/`sections`/`parse_pdf 切章节` NOT enumerated in the brief. Fixed to flat schema + `read_paper`/`search_papers`. *The verification gate (zero `section_id`/`read_section`/`sections`) required this; leaving it would have failed.*
 
-## Verification Greps (brief's hard requirements)
+### 项目概览.md (Steps 8–13 + extra)
+- L78/81 (Step 8): file-tree + data comment → parse_pdf 转纯文本 / 论文完整文本.
+- L99/100 (Step 9): layer responsibilities — new tool set + `get_text("text")`.
+- L116/117 (Step 10): M1 design — flat schema, new tools.
+- L196/199 (Step 11): upload dataflow → `get_text("text")` / `{doc_id, filename, text, uploaded_at}`.
+- L215 (Step 12): query dataflow — new tool set.
+- L246 (Step 13): tech-stack pymupdf row → 纯文本提取.
+- L251 (**brief-implicit**): tech-stack MongoDB row `论文章节文档存储` → `论文文档存储` (flat-schema consistency within the table already being edited).
 
-```
-$ grep -n "agentic_search_db" 任务文档/01-Python文档工具.md
-  (no matches)        → PASS (0 hits)
+### 00-开始指南.md (Step 14 + contradictions)
+- L15 (**brief-implicit**): project-intro exploration line `先翻目录、再读相关章节` → `定位关键段落、按需读取` — contradicted the synced tool set in L36 of the same file.
+- L22 (**brief-implicit**): skills-table row `PDF → 章节文本` → `PDF → 纯文本` — contradicted synced L35.
+- L35/36 (Step 14): learning-path — `把 PDF 转成完整纯文本` + new tool set.
 
-$ grep -n "core/config\|from agentic_search.core" 任务文档/01-Python文档工具.md
-  (no matches)        → PASS (0 hits)
+## Deviations from the brief (all justified)
+1. **概念速查 数据存储 entry (L430/432/434/441/442)** — not in any numbered step but contained `section_id`, `read_section`, `sections` (gate-forbidden). Fixed; mandatory.
+2. **项目概览 L251** + **00-开始指南 L15/L22** — internal contradictions with synced lines in the same files; aligned to keep docs self-consistent ("工具名/schema 统一" goal).
+3. **不再 cleanup (概念速查 L216)** — rewrote the line I was authoring to drop `不再` (Global Constraint forbids it); meaning preserved.
+4. Commit message uses the brief's Step 15 wording (fuller than the job-section shorthand).
 
-$ grep -n "manual/core/databases-and-collections" 任务文档/01-Python文档工具.md
-  755:- MongoDB 官方文档（数据库与集合概念）：https://www.mongodb.com/zh-cn/docs/manual/core/databases-and-collections/
-  → MongoDB URL INTACT and unchanged. (It uses `manual/core/databases` as a URL path segment, not the project config dir, so correctly left alone.)
-```
-
-## `marker` grep — 7 remaining hits
-
-```
- 56  ...保留结构的工具（如 marker-pdf、MinerU）需要下载并加载深度学习模型...   ← INTENTIONAL contrast (keep)
-412  - **无需缓存 converter**：marker-pdf 之类工具初始化要加载模型...pymupdf 的 open() 是轻量操作   ← INTENTIONAL technical contrast (keep)
-462  - **零文件系统依赖**：上传的 PDF 经 marker-pdf 转换后即丢弃...          ← STALE (should be pymupdf) — NOT in brief ⚠️
-718  ### Q：marker-pdf 首次运行时下载很慢或失败                              ← STALE FAQ — NOT in brief ⚠️
-720  **A**：marker-pdf 首次使用需下载模型权重（约数百 MB）...                 ← STALE FAQ — NOT in brief ⚠️
-724  **A**：复杂的合并单元格表格转 Markdown 时可能出现格式偏差，这是 marker-pdf 的已知限制...   ← STALE FAQ — NOT in brief ⚠️
-754  - marker-pdf GitHub：https://github.com/VikParuchuri/marker             ← resources link — task anticipated this ("report it if found")
-```
-
-The brief's self-review expected only the §56 contrast (+ optionally the §754 GitHub link). Lines 412, 462, 718, 720, 724 are extras the brief did not include.
-
-## Concerns (out-of-brief stale references — recommend a small follow-up)
-
-These were NOT in the Task 3 brief, so they were left untouched per "Make NO other edits." They contradict the pymupdf narrative Tasks 1/2 established. None are blockers for the three structural fixes, but they make the doc internally inconsistent:
-
-1. **Line 237** — `mkdir -p src/agentic_search/core src/agentic_search/services` — still creates `core/` (should be `configs/`). This is a core→configs item the brief's Steps 4–11 omitted. **Highest priority** — the §1.5 description (line 241) now says `configs/` but the command creates `core/`. Fix: `src/agentic_search/configs`.
-2. **Line 462** — "上传的 PDF 经 marker-pdf 转换后即丢弃" — should read `pymupdf`.
-3. **Lines 718, 720, 724 (FAQ)** — Q&A about marker-pdf model download slowness and table-format issues. Under pymupdf these are obsolete/incorrect (pymupdf has no model download; plain-text extraction has no table-format concern). Suggest rewriting or removing these FAQ entries.
-4. **Line 754** — `marker-pdf GitHub` resources link (task-anticipated; consider whether to keep as a "see also" or drop).
-5. **Line 664** — "Markdown 中包含 `#` 标题结构" — stale under pymupdf plain text. The brief's Step 16 deliberately touched only the db name on this line, so it was left as-is.
-
-## Files Changed
-
-- `任务文档/01-Python文档工具.md` (committed — see Step 20)
-
-## Recommendation
-
-The brief's contract is fully satisfied. The concerns above are a genuine gap in the *plan* (not the execution): file 01 still contains 5 stale marker-pdf/core references after "the last task." Suggest the main agent spin a quick follow-up (or expand scope) to fix lines 237, 462, 664, 718–724, and decide on 754 — otherwise the doc remains self-contradictory.
-
----
-
-## Follow-up: 5 residual marker-pdf/core references fixed (commit 7be5133)
-
-The "out-of-brief concerns" flagged above (lines 237, 462, 664, 718–724, 754) were resolved in a dedicated follow-up. All 5 stale marker-pdf/core references in `任务文档/01-Python文档工具.md` are now removed. No other edits were made; the legitimate contrast mentions at lines 56 and 412 (marker-pdf as the *rejected* heavier alternative) were intentionally left intact.
-
-1. **Line 237** — `mkdir -p src/agentic_search/core` → `src/agentic_search/configs`. The §1.5 command now creates the `configs/` directory it describes (was creating the obsolete `core/`).
-2. **Line 462** — store_document prose `经 marker-pdf 转换后` → `经 pymupdf 提取后`.
-3. **Line 664** — §步骤5 集成验证: `Markdown 中包含 \`#\` 标题结构` → `文本中包含 PDF 原文内容` (pymupdf is plain-text, no `#` heading structure).
-4. **Lines 718–724** — DELETED both obsolete FAQ Q&A entries (marker-pdf model-download slowness; parse_pdf table-format chaos). pymupdf has no model download and does not reconstruct tables, so both were incorrect. FAQ entries before (ModuleNotFoundError) and after (pytest 找不到测试文件) preserved.
-5. **Line 754** — 延伸阅读 resources link `marker-pdf GitHub: https://github.com/VikParuchuri/marker` → `pymupdf 官方文档：https://pymupdf.readthedocs.io/`.
-
-- Commit: `7be5133` — `docs(01): fix 5 residual marker-pdf/core references missed by brief` (+4 −12)
-- Net diff: 3 single-line replacements + 1 deletion (8 FAQ lines) + 1 link replacement.
-- Verification: `grep "marker-pdf|agentic_search/core"` now returns only the two intentional contrast mentions (lines 56, 412); no `agentic_search/core` directory references remain anywhere in file 01.
+## Concerns
+- None blocking. `backend/` untouched (docs-only scope honored).
+- Residual `不再` instances exist in prose OUTSIDE this task's scope (frontend-behavior clauses: 概念速查 L27/L122, 项目概览 L131, and runtime-loop semantics like 概念速查 L13/L190, 00-开始指南 L54). These describe loop termination or frontend dropdown removal, not schema/tool migration, so they are legitimate runtime prose — left untouched per scope discipline. If a later pass wants a strictly zero-`不再` docs set, those are the remaining spots.
+- A few reading-metaphor uses of 章节 (e.g. 概念速查 L10 「实验章节」, L15 「挑相关章节精读」, ReAct L314) remain — a paper does have chapters as a reading concept; these are not schema references and were intentionally preserved.

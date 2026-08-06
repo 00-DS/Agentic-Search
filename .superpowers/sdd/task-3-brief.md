@@ -1,146 +1,114 @@
-## Task 3: `01-Python文档工具.md` — uv init 命令 + core→configs + 数据库名
+# Task 3: 概念速查.md + 项目概览.md + 00-开始指南.md — 全局同步
 
-> 三处结构修正在本文件的集中改动。注意 core→configs 要避开 MongoDB URL（本文件 §延伸阅读第 763 行有 `core/databases-and-collections` URL，不改）。
+## Files
+- Modify: `任务文档/概念速查.md`
+- Modify: `任务文档/项目概览.md`
+- Modify: `任务文档/00-开始指南.md`
 
-**Files:**
-- Modify: `任务文档/01-Python文档工具.md`（多处）
+## Interfaces
+- Consumes: Task 1+2 的最终工具名与 schema
 
-- [ ] **Step 1: 重写 §1.1 初始化命令（第 148-156 行）**
+## 概念速查.md 改动点
 
-原文：
-```
-打开命令行，进入项目根目录，创建并进入 `backend/`：
+### Step 1: Agentic Search 条目（lines 11, 13）
 
-​```bash
-mkdir backend
-cd backend
-uv init --lib .
-​```
+line 11: 把 `先看目录（list_sections），再按需取某一章（read_section），或在全部章节里正则定位关键词（search_sections）` 改为 `先用正则定位关键词行号（search_papers），再按行号取片段（read_paper），或提取摘要判断相关性（extract_abstract）`
 
-`uv init --lib` 创建一个**库项目**：生成 `pyproject.toml`（含构建后端声明）和 `src/` 目录结构。这与 `uv init`（默认的应用项目）的区别在于，库项目会带上 `[build-system]` 字段，使其可被 `pip install`。
-```
-改为：
-```
-打开命令行，进入项目根目录，用 `uv init --lib <包名>` 初始化库项目（直接把包名传给 `uv init`，从源头让生成物命名正确）：
+line 13: 把 `四个论文导航工具——list_papers（看有哪些论文）、list_sections（看某篇的目录）、read_section（取某一章正文）、search_sections（正则跨章节定位）` 改为 `四个论文导航工具——list_papers（看有哪些论文）、read_paper（按行号取片段）、search_papers（正则定位行号）、extract_abstract（提取摘要）`
 
-​```bash
-uv init --lib agentic-search
-​```
+### Step 2: pymupdf 条目（lines 196-206）
 
-`uv init --lib agentic-search` 会创建一个名为 `agentic-search/` 的目录，其内部已经生成 `pyproject.toml`（含 `[build-system]` 字段）和 `src/agentic_search/`（连字符自动转下划线，命名已正确）。
+整段替换为：
 
-随后**手动把目录调整到本项目的 `backend/` 位置**——把生成的 `agentic-search/` 改名为 `backend/`（或将其内容移入已有的 `backend/`）：
+```markdown
+**定义**：基于 MuPDF 内核的轻量 PDF 处理库。`page.get_text("text")` 返回该页的纯文本字符串——单一 wheel、无模型下载、无 GPU 依赖、即装即用。
 
-​```bash
-mv agentic-search backend
-cd backend
-​```
+**为什么需要**：Agent 要按行号自主探索论文（正则定位、按行号取片段），需要先把 PDF 转成纯文本。pymupdf 用最简的方式做到：即装即用、零额外依赖。不做任何切分——切分是 agent 的职责，它用正则搜索定位行号、按行号读取片段。
 
-`uv init --lib` 创建的是**库项目**：生成 `pyproject.toml`（含构建后端声明）和 `src/` 目录结构。这与 `uv init`（默认的应用项目）的区别在于，库项目会带上 `[build-system]` 字段，使其可被 `pip install`。
+**本项目用法**：在 `backend/src/agentic_search/services/documents.py` 的 `parse_pdf()` 函数中调用 pymupdf 的 `get_text("text")`，把 PDF 转为完整纯文本后连同 `doc_id`、`filename`、`uploaded_at` 存入 MongoDB 的 `documents` 集合。Agent 经 `read_paper(doc_id, start_line, end_line)` 按行号取片段，或经 `search_papers(pattern)` 正则定位。
+
+**理解示例**（教学示例）：一份多页论文 PDF，pymupdf 逐页调用 `get_text("text")` 提取纯文本，所有页拼接成一个完整字符串存入 MongoDB——agent 想看实验就用 `search_papers("experiment|evaluation")` 定位行号，再用 `read_paper` 取那段文本。
+
+**延伸阅读**：[pymupdf 官方文档](https://pymupdf.readthedocs.io/)
 ```
 
-- [ ] **Step 2: 改 §1.3 讲解段（第 172 行）**
+### Step 3: MongoDB 条目（line 216）
 
-原文：`​`uv init --lib`​ 生成的 `pyproject.toml` 已有基本骨架。需要将其中的包名改为 `agentic-search`，并补充依赖。`
-改为：`由于初始化时已传入包名 `agentic-search`，生成的 `pyproject.toml` 已有正确的 `name` 字段，无需再改包名，只补充依赖即可。`
+把 `{ _id, doc_id, filename, sections, uploaded_at }`，`sections` 是 `parse_pdf` 切好的 `{section_id, title, level, text}` 章节数组` 改为 `{ _id, doc_id, filename, text, uploaded_at }`，`text` 是 `parse_pdf` 提取的完整纯文本`
 
-- [ ] **Step 3: 改"默认包名"提示（第 202 行）**
+### Step 4: MongoDB Compass 条目（line 230）
 
-原文：`> `uv init --lib` 默认生成的包名可能是 `backend`。请务必改为 `agentic-search`，并确保 `src/` 下的目录名是 `agentic_search`（下划线）。若目录名不符，需用 `mv` 重命名。`
-改为：`> 因为初始化命令已指定包名 `agentic-search`，`src/` 下的目录名自动为 `agentic_search`（下划线），无需手动改名。`
+把 `{ doc_id, filename, sections, uploaded_at }` 文档（`sections` 是章节数组，每项含 `section_id`/`title`/`level`/`text`）` 改为 `{ doc_id, filename, text, uploaded_at }` 文档（`text` 是完整纯文本）`
 
-- [ ] **Step 4: core→configs — 扁平结构对比图（第 36 行）**
+### Step 5: PyMongo 条目（line 268）
 
-原文：`                             ├── core/config.py`
-改为：`                             ├── configs/config.py`
+把 `read_document()` 用 `find_one()` 按 `doc_id` 取回一篇论文（`sections` 章节数组），`read_section()` 则从该数组取指定 `section_id` 的一章` 改为 `read_document()` 用 `find_one()` 按 `doc_id` 取回一篇论文（`text` 完整纯文本）`
 
-- [ ] **Step 5: core→configs — 学习目标第 3 条（第 13 行）**
+### Step 6: ReAct 条目（lines 316, 318）
 
-原文：`3. 使用 **pydantic-settings** 编写配置层 `core/config.py`，从 `.env` 读取...`
-改为：`3. 使用 **pydantic-settings** 编写配置层 `configs/config.py`，从 `.env` 读取...`
+line 316: 把 `bind_tools` 把四个论文导航工具（`list_papers`/`list_sections`/`read_section`/`search_sections`）的 schema 绑给 LLM` 改为 `bind_tools` 把四个论文导航工具（`list_papers`/`read_paper`/`search_papers`/`extract_abstract`）的 schema 绑给 LLM`
 
-- [ ] **Step 6: core→configs — 产出说明（第 17 行）**
+把 `注意 search_sections 用正则` 改为 `注意 search_papers 用正则`
 
-原文：`...包化骨架（`pyproject.toml` + `src/agentic_search/`）、配置层（`core/config.py`）与文档服务...`
-改为：`...包化骨架（`pyproject.toml` + `src/agentic_search/`）、配置层（`configs/config.py`）与文档服务...`
+line 318: 把 `agent 的典型轨迹是 list_papers → list_sections → search_sections("dataset|corpus|benchmark") → 在命中章节用 read_section 取正文 → 给出答案` 改为 `agent 的典型轨迹是 list_papers → extract_abstract（判断相关性）→ search_papers("dataset|corpus|benchmark") → 在命中行号用 read_paper 取正文 → 给出答案`
 
-- [ ] **Step 7: core→configs — §1.5 目录说明（第 233 行）**
+### Step 7: LangGraph 条目（check lines 164-192 for tool references）
 
-原文：`每个 Python 子包（`core/`、`services/`）都需要一个 `__init__.py` 文件（可为空）来标记其为包。`
-改为：`每个 Python 子包（`configs/`、`services/`）都需要一个 `__init__.py` 文件（可为空）来标记其为包。`
+检查 line 164-192 段落，如有 `list_sections`/`read_section`/`search_sections` 引用则全部替换为新工具名。
 
-- [ ] **Step 8: core→configs — §步骤2 标题（第 245 行）**
+## 项目概览.md 改动点
 
-原文：`## 步骤 2：`core/config.py` — 配置层`
-改为：`## 步骤 2：`configs/config.py` — 配置层`
+### Step 8: 文件结构树（lines 78, 80-81）
 
-- [ ] **Step 9: core→configs — §2.2 小标题（第 275 行）**
+line 78: 把 `documents.py        # 文档工具（parse_pdf 切章节 / list / read / read_section）` 改为 `documents.py        # 文档工具（parse_pdf 转纯文本 / list / read_document）`
 
-原文：`### 2.2 编写 `core/config.py``
-改为：`### 2.2 编写 `configs/config.py``
+line 81: 把 `· agentic_search.documents → 论文章节正文（sections 数组）` 改为 `· agentic_search.documents → 论文完整文本`
 
-- [ ] **Step 10: core→configs — import 路径（第 309 行）**
+### Step 9: 各层职责（lines 99-100）
 
-原文：`整个项目通过 `from agentic_search.core.config import settings` 引用同一个配置对象`
-改为：`整个项目通过 `from agentic_search.configs.config import settings` 引用同一个配置对象`
+line 99: 把 `bind_tools` 绑定 4 个论文导航工具（`list_papers`/`list_sections`/`read_section`/`search_sections`）` 改为 `bind_tools` 绑定 4 个论文导航工具（`list_papers`/`read_paper`/`search_papers`/`extract_abstract`）`
 
-- [ ] **Step 11: core→configs — store_document 示例 import（第 439 行）**
+line 100: 把 `parse_pdf` 用 `get_text("dict")` 切章节 / `list_documents` / `read_document` / `read_section`）` 改为 `parse_pdf` 用 `get_text("text")` 转纯文本 / `list_documents` / `read_document`）`
 
-原文：`from agentic_search.core.config import settings`
-改为：`from agentic_search.configs.config import settings`
+### Step 10: M1 设计（lines 116-117, 122）
 
-- [ ] **Step 12: 数据库名 — 技术概念段（第 58 行）**
+line 116: 把 `parse_pdf()` 用 pymupdf 的 `get_text("dict")` 把 PDF 切成 `{section_id, title, level, text}` 章节后存入 MongoDB、`list_documents()` 查询集合、`read_document(doc_id)` 拼全文、`read_section(doc_id, section_id)` 读某一章。` 改为 `parse_pdf()` 用 pymupdf 的 `get_text("text")` 把 PDF 转为完整纯文本后存入 MongoDB、`list_documents()` 查询集合、`read_document(doc_id)` 读完整文档。`
 
-原文：`本项目用 `agentic_search_db` 数据库下的 `documents` 集合存放论文 Markdown 全文`
-改为：`本项目用 `agentic_search` 数据库下的 `documents` 集合存放论文 Markdown 全文`
+line 117: 把 `list_papers`/`list_sections`/`read_section`/`search_sections`` 改为 `list_papers`/`read_paper`/`search_papers`/`extract_abstract``
 
-- [ ] **Step 13: 数据库名 — §3.2 术语说明（第 431 行）**
+### Step 11: 数据流——上传 PDF 流程（lines 196-199）
 
-原文：`在 MongoDB 术语中，一个 database（本项目为 `agentic_search_db`）下有若干 collection...`
-改为：`在 MongoDB 术语中，一个 database（本项目为 `agentic_search`）下有若干 collection...`
+line 196: 把 `pymupdf get_text("dict") → 章节数组（内存中处理，不落盘）` 改为 `pymupdf get_text("text") → 完整纯文本（内存中处理，不落盘）`
 
-- [ ] **Step 14: 数据库名 — §3.2 验证（第 467 行）**
+line 199: 把 `存入 MongoDB documents 集合 {doc_id, filename, sections: 章节数组, uploaded_at}` 改为 `存入 MongoDB documents 集合 {doc_id, filename, text: 完整纯文本, uploaded_at}`
 
-原文：`...打开 **MongoDB Compass** 查看 `agentic_search_db` 的 `documents` 集合——应能看到一条新记录，其 `markdown` 字段含完整的 `#` 标题结构。`
-改为：`...打开 **MongoDB Compass** 查看 `agentic_search` 的 `documents` 集合——应能看到一条新记录，其 `markdown` 字段含完整纯文本全文。`
+### Step 12: 数据流——提问流程（line 215）
 
-- [ ] **Step 15: 数据库名 — 验证预期输出（第 317 行）**
+把 `LLM 自主调 list_papers / list_sections / read_section / search_sections 探索论文` 改为 `LLM 自主调 list_papers / read_paper / search_papers / extract_abstract 探索论文`
 
-原文：`预期输出：`mongodb://localhost:27017 agentic_search_db gpt-4o-mini``
-改为：`预期输出：`mongodb://localhost:27017 agentic_search gpt-4o-mini``
+### Step 13: 技术栈表（line 246）
 
-- [ ] **Step 16: 数据库名 — 集成验证（第 671 行）**
+把 `PDF → 章节结构化提取（get_text("dict")）` 改为 `PDF → 纯文本提取（get_text("text")）`
 
-原文：`...连接 `mongodb://localhost:27017`，在 `agentic_search_db` 数据库的 `documents` 集合中应能看到刚才存入的记录，其 `markdown` 字段含完整全文。`
-改为：`...连接 `mongodb://localhost:27017`，在 `agentic_search` 数据库的 `documents` 集合中应能看到刚才存入的记录，其 `markdown` 字段含完整全文。`
+## 00-开始指南.md 改动点
 
-- [ ] **Step 17: 数据库名 — 完成检查（第 682 行）**
+### Step 14: 学习路径（lines 35-36）
 
-原文：`- [ ] MongoDB 服务已启动（`localhost:27017`），MongoDB Compass 可连接查看 `agentic_search_db``
-改为：`- [ ] MongoDB 服务已启动（`localhost:27017`），MongoDB Compass 可连接查看 `agentic_search``
+line 35: 把 `把 PDF 切成可读的章节文本` 改为 `把 PDF 转成完整纯文本`
 
-- [ ] **Step 18: 数据库名 + core→configs — 完成检查（第 679、680、688 行）**
+line 36: 把 `LLM 自主调 list_papers/list_sections/read_section/search_sections 等工具探索论文` 改为 `LLM 自主调 list_papers/read_paper/search_papers/extract_abstract 等工具探索论文`
 
-第 679 行原文：`- [ ] `backend/pyproject.toml` 存在，包名为 `agentic-search`，包含 `marker-pdf`、`pydantic-settings`、`pymongo`、`pytest`（dev）`
-改为：`- [ ] `backend/pyproject.toml` 存在，包名为 `agentic-search`，包含 `pymupdf`、`pydantic-settings`、`pymongo`、`pytest`（dev）`
-
-第 680 行原文：`- [ ] `backend/src/agentic_search/core/config.py` 存在，`settings` 含 `mongo_uri`、`mongo_db`...`
-改为：`- [ ] `backend/src/agentic_search/configs/config.py` 存在，`settings` 含 `mongo_uri`、`mongo_db`...`
-
-第 688 行原文：`uv run python -c "from agentic_search.services.documents import parse_pdf; from agentic_search.core.config import settings; print(settings.mongo_uri); print('包化 import 成功')"`
-改为：`uv run python -c "from agentic_search.services.documents import parse_pdf; from agentic_search.configs.config import settings; print(settings.mongo_uri); print('包化 import 成功')"`
-
-- [ ] **Step 19: core→configs — 模块总结（第 773 行）**
-
-原文：`...同时 Agent 会用到 `core/config.py` 中的 LLM 配置...`
-改为：`...同时 Agent 会用到 `configs/config.py` 中的 LLM 配置...`
-
-- [ ] **Step 20: Commit**
+### Step 15: Commit
 
 ```bash
-cd "D:/Python/Common/Agentic Search"
-git add 任务文档/01-Python文档工具.md
-git commit -m "docs(01): uv init with name, rename core->configs, db name agentic_search"
+cd "D:\Python\Common\Agentic Search"
+git add 任务文档/概念速查.md 任务文档/项目概览.md 任务文档/00-开始指南.md
+git commit -m "docs(全局同步): 工具名/schema 统一——list_papers/read_paper/search_papers/extract_abstract"
 ```
 
----
+## Global Constraints
+
+- **仅文档范围**：只编辑 `任务文档/` 下的 `.md` 文件，绝不碰 `backend/` 代码。
+- **纯新版本，零历史包袱**：不出现"旧版"/"原来"/"之前"/"不再"/"改用"等对比性措辞。
+- **MongoDB schema**：`{doc_id, filename, text, uploaded_at}`——扁平文档。无 `sections` 数组。
+- **四工具签名**：`list_papers()` / `read_paper(doc_id, start_line, end_line)` / `search_papers(pattern, doc_id)` / `extract_abstract(doc_id)`

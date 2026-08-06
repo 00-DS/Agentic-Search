@@ -777,7 +777,7 @@ print(r.json())
 #    timeout=60 因为 agent 要多轮调用工具才回答，默认 5 秒不够
 uv run python -c '
 import httpx
-with httpx.stream("POST", "http://localhost:8000/api/query", json={"question": "这篇论文的核心方法是什么？"}, timeout=60) as r:
+with httpx.stream("POST", "http://localhost:8000/api/query", json={"question": "TiMem的核心方法是什么？"}, timeout=60) as r:
     for line in r.iter_lines():
         if line:
             print(line)
@@ -821,7 +821,7 @@ def test_graph_returns_answer():
     """agent 跑完 ReAct 循环后，最后一条消息应是含答案的 AIMessage。"""
     graph = build_graph()
     result = graph.invoke({
-        "messages": [HumanMessage(content="这篇论文的核心方法是什么？")],
+        "messages": [HumanMessage(content="TiMem的核心方法是什么？")],
     })
 
     # agent 的多轮探索（list_papers → read_paper → ...）都累加进 messages，

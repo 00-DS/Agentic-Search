@@ -1,85 +1,51 @@
-# Task 2 Report — `01-Python文档工具.md` parse_pdf spec & tests (pymupdf)
+# Task 2 Report — 02-LangGraph-Agent.md 四工具新签名
 
-**File modified:** `任务文档/01-Python文档工具.md`
-**Commit:** `15d17f4` — `docs(01): rewrite parse_pdf spec and tests for pymupdf`
-**Diff size:** +35 / -50
+## Status: DONE
 
-## Edits applied
+## Commit
+- `fe9b901` — `docs(02): 四工具新签名——list_papers/read_paper/search_papers/extract_abstract` (+68 −58, 1 file)
 
-### Step 1 — Rewrite §3.1 `parse_pdf(pdf_path)` ✅
-- Replaced the entire §3.1 section (old lines 341–426, up to but not including `### 3.2`)
-  with the pymupdf version from the brief.
-- Old `PdfConverter` / `create_model_dict` / module-level `_converter` cache code is gone;
-  replaced with `import pymupdf` → `pymupdf.open()` → `page.get_text()` → `"\n".join(parts)`.
-- The "转换效果" block now shows plain-text output (no `#` heading markers).
-- `doc.close()` present in the teaching example.
-- Matched by section boundaries (start heading + `### 3.2` anchor), not raw line numbers
-  — matched cleanly on the first read.
+## What Changed (per brief step)
 
-### Step 2 — store_document code comment ✅
-- Changed (line 444):
-  - `# marker-pdf 转出的完整 Markdown 全文` → `# pymupdf 提取的完整纯文本全文`
-- Exact `原文` text from the brief matched verbatim.
+| Step | Location (orig → final line) | Change |
+|------|------------------------------|--------|
+| 1 | 学习目标第 3 条 (line 9) | `list_papers/list_sections/read_section/search_sections` → `list_papers/read_paper/search_papers/extract_abstract` |
+| 2 | ReAct 概念段 (line 20) | same tool-name swap in the "自主探索论文语料库" sentence |
+| 3 | tool_calls JSON 示例 (line 31) | `"name": "search_sections"` → `"name": "search_papers"` |
+| 4 | mermaid 流程图 (lines 84, 87) | `执行工具（read_section 等）` → `（read_paper 等）`; `list_documents / read_section` → `list_documents / read_document` |
+| 5 | 前置要求 (line 100) | `parse_pdf（返回 sections 数组）…read_section 已实现` → `parse_pdf（返回完整纯文本）…read_document 已实现` (dropped read_section) |
+| 6 | ReAct 设计说明段 (lines 108-113, 6 lines → 7) | full rewrite per brief: `两个逼出…约束` → `三个逼出…约束`; added `extract_abstract`/`read_paper`/`search_papers` omp analogies + 3rd constraint about extract_abstract being a read-time tool |
+| 7 | 目录结构注释 (line 143) | `parse_pdf 切章节 / list / read / read_section` → `parse_pdf 转纯文本 / list / read_document` |
+| 8 | 第 6 步 tools.py 整段 (lines 369-461 after +1 shift) | **largest change**: full tools.py rewrite. `list_papers/read_paper/search_papers/extract_abstract` operating on line numbers of full text (`_get_doc_text` helper, 1-indexed line slicing, regex line-scan returning `line_number`+`line`, abstract paragraph extraction). New omp-correspondence table + 2 design-rationale paragraphs (search_papers regex, extract_abstract read-time) + verification command |
+| 9 | build_graph (lines 484, 490) | import + `tools = [...]` list swapped to new four names |
+| — (beyond brief, required by Step 10) | narrative remnants (lines 789, 799, 824, 830) | swapped `search_sections`→`search_papers`, `read_section`→`read_paper`, `list_sections`→`extract_abstract` in curl example, verification text, test comment, test-observation paragraph |
 
-### Step 3 — Rewrite §4.1 test `parse_pdf` ✅
-- Replaced entire §4.1 section (old lines 541–569, up to but not including `#### 4.2`).
-- Removed `test_parse_pdf_contains_markdown_structure` and its `assert "#" in result`.
-- Kept `test_parse_pdf_returns_string` and `test_parse_pdf_file_not_found`.
-- Added closing note: "提取结果是纯文本，不再断言含 `#` 之类结构标记——pymupdf 输出不含这些。"
-- Intro line changed from "纯转换函数...输出 Markdown 字符串" to "纯提取函数...输出纯文本字符串".
-- Inner triple-backtick code fences written as literal doc content (four-backtick fence
-  in the brief was only the replacement delimiter).
+## Verification — grep results (post-edit, file 920 lines)
 
-### Step 4 — §步骤5 integration example ✅
-- Line 632: `# 1. 将一个 PDF 转换为 Markdown` → `# 1. 将一个 PDF 提取为纯文本`
-- Line 634: `print(f'转换完成，Markdown 长度: {len(markdown)} 字符')` → `print(f'提取完成，文本长度: {len(markdown)} 字符')`
-- Middle line (`markdown = parse_pdf('你的文件.pdf')`) preserved.
+- `list_sections|read_section|search_sections|section_id` → **No matches** ✓
+- bare `sections` → **No matches** ✓
+- New tool names present: `list_papers`/`read_paper`/`search_papers`/`extract_abstract` all match (definitions + table + import + tools list + narrative).
 
-## Verification — marker-pdf references in §3.1 / §4.1 area
+## Decorator network check (must stay intact)
 
-`grep -n "marker-pdf"` in lines 320–570 (§3.1 → §4.1):
+- **`@retry` (Step 5)**: heading line 312; definition `def retry(...)` + `@retry(max_attempts=3)` demo at 358; applied in build_graph at lines 498-500 (`@retry(max_attempts=3)` wrapping `llm_call`); cross-ref rationale at 528. ✓
+- **`@tool` (Step 6)**: four `@tool` decorators on `list_papers`(392), `read_paper`(400), `search_papers`(411), `extract_abstract`(429); cross-refs at 163, 365, 371, 523. ✓
+- **`@router.post` (Step 9)**: at 625 (`/query`), 656 (`/ingest`), 699 (`/consolidate`) + `@router.get` at documents; cross-refs at 48, 365, 618. ✓
+- **`@dataclass`** (module-4 forward refs): lines 10, 365. ✓
 
-```
-405:- **无需缓存 converter**：marker-pdf 之类工具初始化要加载模型、开销大，需用模块级缓存；pymupdf 的 `open()` 是轻量操作，每次调用即可，无需缓存层。
-455:- **零文件系统依赖**：上传的 PDF 经 marker-pdf 转换后即丢弃，不在磁盘上留存任何 `.md` 文件。所有数据集中在 MongoDB 一处，便于备份、迁移与可视化查看。
-```
+The `@retry → @tool → @router` teaching arc is fully intact and the cross-references (lines 48, 365, 523, 528, 618) all still resolve.
 
-Interpretation:
-- **Line 405** is INSIDE §3.1 but is the **intended** contrast sentence written verbatim
-  by the brief's Step 1 replacement (it explains why pymupdf needs no converter cache by
-  comparing to marker-pdf). Not a leftover — it is the new content.
-- **Line 455** is in **§3.2 store_document** prose (讲解要点), NOT in §3.1/§4.1 and NOT
-  one of my 4 assigned edits. Per the task brief, out-of-scope marker-pdf refs belong to
-  Task 3. Left untouched.
-- **§4.1 (lines 541–565)** contains **zero** marker-pdf references. ✅
-- No `PdfConverter`, `contains_markdown_structure`, `assert "#" in result`,
-  `Markdown 长度`, or `转换为 Markdown` strings remain anywhere in the file.
-
-## Scope check
-- Only the 4 brief edits applied. No edits to `core/`→`configs/`, `uv init`, DB name, FAQ,
-  or checklist — those are Task 3.
-- No `backend/` code touched.
-- Only `任务文档/01-Python文档工具.md` changed.
+## Constraints honored
+- Only `任务文档/02-LangGraph-Agent.md` edited; no `backend/` code touched. ✓
+- No comparative phrasing ("旧版/原来/之前/不再/改用") introduced in the rewritten sections (pre-existing historical-comparison lines outside the task scope were left untouched per "仅文档范围 + 只做指定改动"). ✓
+- `MessagesState` standard base class unchanged (Step 4 region not in scope). ✓
+- Four tool signatures match project-wide contract. ✓
+- No embedding/向量库 introduced. ✓
 
 ## Files changed
-- `任务文档/01-Python文档工具.md` (+35 / −50)
+- `任务文档/02-LangGraph-Agent.md` (+68 −58)
 
-## Follow-up fix — stale sample pytest output (Task 2 review)
-
-**Commit:** `be169b1` — `docs(01): fix stale sample pytest output (6 tests, drop removed test)`
-**Diff size:** +1 / -2
-
-### Issue
-Step 3 removed `test_parse_pdf_contains_markdown_structure` from §4.1 (pymupdf output has
-no `#` structure to assert), but the `§完成检查` sample pytest output block still listed
-the deleted test and showed `7 passed` — now stale: only 6 tests remain.
-
-### Edits applied (2 lines)
-- Deleted the line `tests/test_documents.py::test_parse_pdf_contains_markdown_structure PASSED`
-  from the sample output block.
-- Changed `======================== 7 passed in 1.2s ========================`
-  → `======================== 6 passed in 1.2s ========================`.
-
-### Scope check
-- Touched only the sample pytest output block (~lines 686–695). No checklist items,
-  no other sections, no `backend/` code.
+## Concerns
+1. **Brief-internal docstring/code mismatch (carried over verbatim from brief, NOT introduced by me)**: `search_papers`'s docstring says it returns `[{doc_id, line_number, line, snippet}]` but the appended dict only has `{doc_id, line_number, line}` (no `snippet` field). This inconsistency exists in the brief itself (brief line 101 vs brief lines 105-114). I transcribed the brief exactly as specified rather than "fixing" it, since the brief is the authoritative spec. Flagging for awareness — a downstream reviewer may want the docstring trimmed to `[{doc_id, line_number, line}]`.
+2. **Unused import (per brief)**: the new tools.py imports `read_document` from module 1 but never calls it (the `_get_doc_text` helper queries `_documents_collection` directly). This matches the brief verbatim (brief lines 67-69) — likely a deliberate teaching choice to surface the module-1 API surface. Kept as-is per spec; would be a lint warning (`F401`) in real code.
+3. Minor: line-endings warning (LF→CRLF) on commit is benign on Windows.
