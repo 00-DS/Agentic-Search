@@ -2,21 +2,25 @@ from agentic_search.services.documents import parse_pdf, store_document, list_do
 import pytest
 
 def test_parse_pdf_return_string():
-    result = parse_pdf(r"D:\Python\Common\Agentic Search\任务文档\TiMem Temporal-Hierarchical Memory Consolidation for Long-Horizon Conversational Agents.pdf")
+    from pathlib import Path
+    pdf_path = r"D:\Python\Common\Agentic Search\任务文档\TiMem Temporal-Hierarchical Memory Consolidation for Long-Horizon Conversational Agents.pdf"
+    result = parse_pdf(Path(pdf_path).read_bytes())
     assert isinstance(result, str)
     assert len(result) > 0
 
-def test_parse_pdf_file_not_found():
-    with pytest.raises(FileNotFoundError):
-        parse_pdf("nonexistent_file.pdf")
+def test_parse_pdf_empty_bytes_raises():
+    """空字节流应被 pymupdf 拒绝。"""
+    import pymupdf
+    with pytest.raises(pymupdf.EmptyFileError):
+        parse_pdf(b"")
 
 def test_store_and_read_document():
-    """存入后应能按 doc_id 读回完整 Markdown。"""
+    """存入后应能按 doc_id 读回完整文本。"""
     doc_id = "test-doc-001"
-    store_document(doc_id, "测试论文.pdf", "# 测试标题\n正文内容")
-    content = read_document(doc_id)
-    assert isinstance(content, str)
-    assert "# 测试标题" in content
+    store_document(doc_id, "测试论文.pdf", "正文内容")
+    doc = read_document(doc_id)
+    assert isinstance(doc["text"], str)
+    assert "正文内容" in doc["text"]
 
 
 def test_list_documents_returns_list():
