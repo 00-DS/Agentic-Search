@@ -495,8 +495,6 @@ Pydantic 在这里的作用是**数据校验**：当请求体的 `question` 字�
 ```python
 # api/routes.py —— 教学示例：4 个 HTTP 端点
 import json
-import os
-import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File
