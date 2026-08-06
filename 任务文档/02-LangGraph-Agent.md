@@ -497,7 +497,7 @@ Pydantic 在这里的作用是**数据校验**：当请求体的 `question` 字�
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage, AIMessageChunk
 
@@ -632,18 +632,20 @@ def parse_pdf(pdf_bytes: bytes) -> str:
 >
 > **同步更新模块 1 的测试**：`parse_pdf` 改了契约，`test_documents.py` 里两条测试要跟着改——`test_parse_pdf_return_string` 调用改为传 `Path(path).read_bytes()`；`test_parse_pdf_file_not_found` 换成 `test_parse_pdf_empty_bytes_raises`，断言 `pymupdf.EmptyFileError`。
 
-#### 优化后的 ingest：12 行 → 4 行
+#### 优化后的 ingest
 
 契约改完，ingest 端点塌缩成：
 
 ```python
 @router.post("/ingest", response_model=IngestResponse)
-async def ingest(file: UploadFile = File(...)):
+async def ingest(file: UploadFile):
     """上传 PDF，提取纯文本并存入 MongoDB（零文件系统依赖）。"""
-    pdf_bytes = await file.read()             # ① 读字节
-    text = parse_pdf(pdf_bytes)               # ② 直接喂字节，无临时文件
-    doc_id = Path(file.filename).stem         # ③ 派生 doc_id
-    store_document(doc_id, file.filename, text)  # ④ 存 MongoDB
+    if not file.filename:                                 # 外部输入，先校验
+        raise HTTPException(422, "缺少文件名（filename）")
+    pdf_bytes = await file.read()                         # ① 读字节
+    text = parse_pdf(pdf_bytes)                           # ② 直接喂字节，无临时文件
+    doc_id = Path(file.filename).stem                     # ③ 派生 doc_id
+    store_document(doc_id, file.filename, text)           # ④ 存 MongoDB
     return IngestResponse(doc_id=doc_id, filename=file.filename)
 ```
 

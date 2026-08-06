@@ -1,9 +1,9 @@
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import HumanMessage, AIMessageChunk
+from langchain_core.messages import AIMessageChunk, HumanMessage
 
 from agentic_search.agents.graph import build_graph
 from agentic_search.api.schemas import (
@@ -41,11 +41,31 @@ async def query(req: QueryRequest):
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 @router.post("/ingest", response_model=IngestResponse)
-async def ingest(file: UploadFile = File(...)):
+async def ingest(file: UploadFile):
     """上传 PDF，提取纯文本并存入 MongoDB（零文件系统依赖）。"""
+    if not file.filename:
+        raise HTTPException(422, "缺少文件名（filename）")
     pdf_bytes = await file.read()
     text = parse_pdf(pdf_bytes)
     doc_id = Path(file.filename).stem
     store_document(doc_id, file.filename, text)
 
     return IngestResponse(doc_id=doc_id, filename=file.filename)
+
+@router.get("/documents", response_model=list[DocumentResponse])
+async def documents():
+    """列出已上传的文档。"""
+    return list_documents()
+
+@router.post("/consolidate", response_model=ConsolidateResponse)
+async def consolidate(req: ConsolidateRequest):
+    """手动触发 L2 会话记忆整合。
+
+    注意：L2 整合逻辑在模块 4 的 memory/store.py 中实现。
+    本路由负责把 HTTP 请求转发到记忆层；此处为占位，
+    模块 4 将补全真正的整合调用。
+    """
+    # 模块 4 将在此处调用 memory.store 的整合函数
+    # from agentic_search.memory.store import consolidate_session
+    # return ConsolidateResponse(status="ok", l2_id=consolidate_session(req.session_id))
+    return ConsolidateResponse(status="pending", l2_id="")
