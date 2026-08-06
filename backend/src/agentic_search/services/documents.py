@@ -9,7 +9,8 @@ from agentic_search.configs.config import settings
 def parse_pdf(pdf_bytes: bytes) -> str:
     """从 PDF 字节流提取纯文本（不读文件、不落盘）。"""
     with pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc:
-        return "\n".join(page.get_text("text") for page in doc)
+        parts = [page.get_text("text") for page in doc]
+        return "\n".join(parts)
 
 _client = MongoClient(settings.mongo_url)
 _db = _client[settings.mongo_db]
