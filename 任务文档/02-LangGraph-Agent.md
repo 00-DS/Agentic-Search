@@ -623,8 +623,7 @@ pymupdf.open(filename=None, stream=None, filetype=None, ...)
 def parse_pdf(pdf_bytes: bytes) -> str:
     """从 PDF 字节流提取纯文本（不读文件、不落盘）。"""
     with pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc:
-        parts = [page.get_text("text") for page in doc]
-        return "\n".join(parts)
+        return "\n".join(str(page.get_text("text")) for page in doc)
 ```
 
 变化只有两处：入参 `path` → `pdf_bytes`；内部 `pymupdf.open(p)` → `pymupdf.open(stream=pdf_bytes, filetype="pdf")`。原来那三行 `Path` / `exists` / `FileNotFoundError` 全删——文件不存在的语义交给调用方的 `read_bytes()` 自然抛 `FileNotFoundError`。
