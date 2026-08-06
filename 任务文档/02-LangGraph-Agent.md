@@ -563,7 +563,7 @@ async def query(req: QueryRequest):
 
 ```python
 def parse_pdf(path: str | Path) -> str:   # ← 模块 1 的契约：收路径
-    with pymupdf.open(p) as doc:
+    with pymupdf.open(path) as doc:
         ...
 ```
 
