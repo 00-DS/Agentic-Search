@@ -748,7 +748,11 @@ uv run uvicorn agentic_search.main:app --reload --port 8000
 
 **验证——启动后用 curl 测试**（PowerShell 版）：
 
-> **为什么用 `curl.exe` 而非 `curl`？** 在 PowerShell 里，`curl` 是 `Invoke-WebRequest` 的别名——语法与真 curl 完全不同。必须显式写 `curl.exe`，PowerShell 才会去调系统自带的真 curl。续行用反引号 `` ` ``（键盘 `1` 左边那个键），**不是** Bash 的反斜杠 `\`。
+> **三个 PowerShell 坑，逐个绕开：**
+>
+> 1. **`curl` 是别名，要写 `curl.exe`**。在 PowerShell 里 `curl` 是 `Invoke-WebRequest` 的别名，语法与真 curl 完全不同，必须显式写 `curl.exe`。
+> 2. **续行用反引号 `` ` ``，不是反斜杠 `\`**。`` ` `` 在键盘 `1` 左边那个键。Bash 的 `\` 在 PowerShell 里不续行，会把命令拆成两条。
+> 3. **JSON 请求体要写进 UTF-8 文件，不能直接写在 `-d` 里**。PowerShell 传给 curl.exe 的内联参数会丢失 JSON 里的双引号；而且中文 Windows 的控制台默认是 GBK 编码（代码页 936），直接写在命令里的中文会被编码成 GBK 字节，服务端按 UTF-8 解码就乱码。把 JSON 写进一个 UTF-8 文件、用 `--data-binary @文件` 读取，两个问题一起解决。
 
 ```powershell
 # ① 列出文档（启动后应能访问，即使列表为空）
@@ -758,13 +762,17 @@ curl.exe http://localhost:8000/api/documents
 curl.exe -X POST http://localhost:8000/api/ingest `
   -F "file=@/path/to/your_paper.pdf"
 
-# ③ 提问（SSE 流式）—— -N 禁用缓冲，逐 token 看到流式输出；event: tool 行标记工具调用
-#    PowerShell 不转义 -d 里的 JSON，用 --% 让它原样把后续参数传给 curl.exe；
-#    JSON 的双引号写成 \" 转义
-curl.exe --% -N -X POST http://localhost:8000/api/query -H "Content-Type: application/json" -d "{\"question\": \"这篇论文的核心方法是什么？\"}"
+# ③ 提问（SSE 流式）——先把问题写进 UTF-8 文件，再用 --data-binary @文件 发送
+#    -N 禁用缓冲，逐 token 看到流式输出；event: tool 行标记工具调用
+$body = '{"question": "这篇论文的核心方法是什么？"}'
+[System.IO.File]::WriteAllText("$env:TEMP\q.json", $body, [System.Text.Encoding]::UTF8)
+curl.exe -N -X POST http://localhost:8000/api/query -H "Content-Type: application/json" --data-binary "@$env:TEMP\q.json"
 
 # ④ 跨论文提问——观察 agent 自主调 list_papers → search_papers → read_paper
-curl.exe --% -N -X POST http://localhost:8000/api/query -H "Content-Type: application/json" -d "{\"question\": \"对比语料库里两篇论文用了哪些不同的数据集？\"}"
+#    换个问题：改 $body 里的文字，重新 WriteAllText，再发同一条 curl 即可
+$body = '{"question": "对比语料库里两篇论文用了哪些不同的数据集？"}'
+[System.IO.File]::WriteAllText("$env:TEMP\q.json", $body, [System.Text.Encoding]::UTF8)
+curl.exe -N -X POST http://localhost:8000/api/query -H "Content-Type: application/json" --data-binary "@$env:TEMP\q.json"
 ```
 
 > 命令 ③④ 走的是 `/api/query` 流式接口，会持续推送 SSE 事件直到 agent 回答完毕（连接关闭即结束）。想中途打断按 `Ctrl+C`。
@@ -852,7 +860,7 @@ uv run pytest tests/ -v
 - [ ] `uv run uvicorn agentic_search.main:app --reload --port 8000` 成功启动
 - [ ] `curl.exe http://localhost:8000/api/documents` 返回 JSON 列表
 - [ ] `curl.exe -X POST .../api/ingest -F "file=@论文.pdf"` 返回 `doc_id` 与 `filename`
-- [ ] `curl.exe --% -N -X POST .../api/query -H "Content-Type: application/json" -d "{\"question\":\"...\"}"` 返回 SSE 流，文字 token 逐个到达（非等待后一次性弹出），`event: tool` 行标记工具调用
+- [ ] 把问题写进 UTF-8 文件后，`curl.exe -N -X POST .../api/query -H "Content-Type: application/json" --data-binary "@$env:TEMP\q.json"` 返回 SSE 流，文字 token 逐个到达（非等待后一次性弹出），`event: tool` 行标记工具调用
 - [ ] 访问 `http://localhost:8000/docs` 能看到 4 个端点的交互式文档
 - [ ] `uv run pytest tests/ -v` 全部绿色
 
