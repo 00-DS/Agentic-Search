@@ -24,6 +24,7 @@
 > **先观察：开启工具调用后，LLM 的响应长什么样？**
 >
 > 当 LLM 决定调工具时，OpenAI 兼容接口的响应里 `finish_reason` 是 `"tool_calls"`，`message.content` 为空，真正的指令藏在 `tool_calls` 数组里：
+>
 > ```json
 > {"choices": [{"index": 0, "finish_reason": "tool_calls",
 >   "message": {"role": "assistant", "content": null,
@@ -31,6 +32,7 @@
 >       "function": {"name": "search_papers",
 >         "arguments": "{\"pattern\": \"dataset|corpus\", \"doc_id\": \"paper_001\"}"}}]}}]}
 > ```
+>
 > 注意 `arguments` 还是一段 **JSON 字符串**（不是字典），需要二次解析；`finish_reason` 决定了响应该怎么处理（`"tool_calls"` 走工具执行，`"stop"` 才是最终答案）。旧版本教过「`content` 是字符串、要 `json.loads` 二次解析」——同样的结构，观感重点从「解析 content」转到了「路由 tool_calls」。LangChain 的 `.invoke()` 会把上面这段解析成结构化的 `AIMessage(tool_calls=[...])`，你不必手写解析——这正是用框架而非裸 HTTP 的核心理由。
 
 > **为什么用 LangChain 而非裸 httpx？** 旧版本用裸 httpx 直接打 DeepSeek 的 `/chat/completions`，图「少一层抽象，能看见完整请求与响应」。但工具调用协议很复杂：要在请求里声明工具 schema、解析响应里的 `tool_calls`、校验参数、路由到对应工具、收集结果、再作为 `ToolMessage` 回灌——这套 ReAct 胶水自己用裸 httpx 写是几百行噪声。LangChain 的 `init_chat_model(...).bind_tools(...)` + LangGraph 的 `ToolNode` 把它们全封装了。所以 agent 层切到 LangChain；httpx 的「客户端 vs 服务端」概念下面单独讲。
@@ -115,8 +117,8 @@ graph LR
 三个逼出 agentic 行为的设计约束：
 
 1. **没有「读整篇论文」的工具**。agent 必须先 `search_papers` 定位行号、再 `read_paper` 按行号取片段——这是「按需取片段」的强约束，既逼出真正的多轮探索，也是多论文场景下不撑爆上下文窗口的根本保障。
-2. **`search_papers` 用正则、不用 embedding**。对齐 omp `grep`：参数是正则 `pattern`（不是语义 query），返回命中行+行号。智能来自 LLM 自主迭代构造正则。**不用向量库、不做 embedding。**
-3. **`extract_abstract` 是读取时工具，不是上传预处理**。对齐 omp 的 `summarizeCode()`：agent 按需调用，从完整文本里正则提取 abstract 段落。不在上传时预计算。
+2. `**search_papers` 用正则、不用 embedding**。对齐 omp `grep`：参数是正则 `pattern`（不是语义 query），返回命中行+行号。智能来自 LLM 自主迭代构造正则。**不用向量库、不做 embedding。**
+3. `**extract_abstract` 是读取时工具，不是上传预处理**。对齐 omp 的 `summarizeCode()`：agent 按需调用，从完整文本里正则提取 abstract 段落。不在上传时预计算。
 
 ---
 
@@ -162,18 +164,21 @@ uv add langgraph langchain langchain-openai fastapi 'uvicorn[standard]' pydantic
 
 各项依赖的职责：
 
-| 依赖 | 职责 | 用在哪 |
-|------|------|--------|
-| `langgraph` | Agent 图工作流：StateGraph、条件边、`ToolNode`、`MessagesState` | `agents/graph.py` |
-| `langchain` | LLM 抽象 + 工具调用协议（`@tool` / `bind_tools`） | `agents/graph.py` |
-| `langchain-openai` | OpenAI 兼容 provider（接 DeepSeek 的 `/chat/completions`） | `agents/graph.py` |
-| `fastapi` | Web 框架 | `main.py`、`api/routes.py` |
-| `uvicorn[standard]` | ASGI 服务器（`[standard]` 额外装入 uvloop 与 httptools，官方推荐的完整安装） | 启动命令 |
-| `pydantic-settings` | 从 `.env` 读配置 | `configs/config.py` |
+
+| 依赖                  | 职责                                                       | 用在哪                       |
+| ------------------- | -------------------------------------------------------- | ------------------------- |
+| `langgraph`         | Agent 图工作流：StateGraph、条件边、`ToolNode`、`MessagesState`     | `agents/graph.py`         |
+| `langchain`         | LLM 抽象 + 工具调用协议（`@tool` / `bind_tools`）                  | `agents/graph.py`         |
+| `langchain-openai`  | OpenAI 兼容 provider（接 DeepSeek 的 `/chat/completions`）     | `agents/graph.py`         |
+| `fastapi`           | Web 框架                                                   | `main.py`、`api/routes.py` |
+| `uvicorn[standard]` | ASGI 服务器（`[standard]` 额外装入 uvloop 与 httptools，官方推荐的完整安装） | 启动命令                      |
+| `pydantic-settings` | 从 `.env` 读配置                                             | `configs/config.py`       |
+
 
 > **httpx 去哪了？** 旧版本单独安装 httpx 并在 agent 代码里直接发 HTTP 请求。现在 agent 层改用 LangChain，HTTP 调用由 LangChain 内部处理（底层仍是 httpx/openai 客户端），所以 agent 代码不再直接 import httpx，也不必单独安装。
 
 ---
+
 ## 第 2 步：Hello World —— 最小 Agent 图（验证 ReAct 结构）
 
 在写正式工具前，先用一个最小例子确认 ReAct 循环的图结构能跑通。这是排查环境问题的标准做法。本例**用桩函数代替真实 LLM**——目的是验证 `langgraph` 已装好、条件边 + 工具节点的模式能编译运行，不需要 API Key。
@@ -236,7 +241,7 @@ uv run python hello_agent.py
 
 **验证**：终端输出 `现在 14:00。`。这就跑通了一个完整的 ReAct 循环——`llm_call → tools → llm_call → END`。逐段说明新概念：
 
-- **`add_messages` reducer**：`messages` 字段标注 `Annotated[list, add_messages]`，表示节点返回的 messages 会**追加**到历史，而不是覆盖（普通字段才是覆盖）。这是循环的关键——工具产生的 `ToolMessage` 要追加进历史，下一轮 `llm_call` 才能看到「上一步调了什么、拿到了什么」。
+- `**add_messages` reducer**：`messages` 字段标注 `Annotated[list, add_messages]`，表示节点返回的 messages 会**追加**到历史，而不是覆盖（普通字段才是覆盖）。这是循环的关键——工具产生的 `ToolMessage` 要追加进历史，下一轮 `llm_call` 才能看到「上一步调了什么、拿到了什么」。
 - **条件边（`add_conditional_edges`）**：第一个参数是源节点，第二个是路由函数（返回 `"tools"` 或 `END`），第三个是可选的「可能去向」列表（给图的可视化与校验用）。路由函数检查最后一条消息——有 `tool_calls` 就去执行工具，没有就结束。
 - **工具回流边**：`add_edge("tools", "llm_call")` 让工具执行完回到 LLM，形成循环。正式代码用 `ToolNode([...])` 替代手写的 `get_time`，它能根据 `tool_calls` 自动路由到正确的工具（工具来自[模块 1](./01-Python文档工具.md)，组装见第 6 步）。
 
@@ -294,12 +299,14 @@ uv run python -c "from agentic_search.configs.config import settings; print(sett
 from langgraph.graph import MessagesState   # 预置状态：messages 字段已带 add_messages reducer
 ```
 
-**`MessagesState` 是什么？** 它是 LangGraph 预置的状态基类，内部就一行定义：
+`**MessagesState` 是什么？** 它是 LangGraph 预置的状态基类，内部就一行定义：
+
 ```python
 # LangGraph 源码 langgraph/graph/message.py 里的 MessagesState（无需自己写，直接用）
 class MessagesState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
 ```
+
 `messages` 字段标注 `Annotated[list[AnyMessage], add_messages]`，表示节点返回的 messages 会**追加**到历史而不是覆盖——这正是 ReAct 循环的关键：`tool_node` 产出的 `ToolMessage` 必须接在之前的对话之后，下一轮 `llm_call` 才能看到完整脉络。LangGraph 把这行封装成 `MessagesState`，让你直接拿来用。
 
 **为什么不再自定义 `question` 字段？** 用户提问就是 `messages` 列表的第一条 `HumanMessage`（`messages[0].content` 就是问题），最终答案就是最后一条 AI 消息（`messages[-1].content` 就是答案）。单独留 `question` 字段会重复存储同一信息——标准做法是只靠 `messages`，API 层直接从 `messages[0]` / `messages[-1]` 取。
@@ -426,10 +433,10 @@ def build_graph():
 
 逐点拆解四件套如何把第 2 步的桩函数换成真 agent：
 
-- **`init_chat_model(...)` + `bind_tools(tools)`**：把模块 1 四个 `@tool` 函数的 schema 注入 LLM。开启后，LLM 的响应里就可能带 `tool_calls`（见技术概念的「先观察」），而不再只是纯文本。
-- **`ToolNode(tools)`**：替代第 2 步手写的 `get_time` 桩。它自动读上一条消息的 `tool_calls`，分发到对应工具、执行、把结果包成 `ToolMessage` 回灌——这就是「工具调用协议」的胶水，由 LangGraph 封装好。
-- **`add_conditional_edges("llm_call", should_continue, ...)`**：这是 agent 的**心脏**。`should_continue` 只看一眼最后一条消息——有 `tool_calls` 就跳到 `tool_node`，没有就到 `END`。对标 omp 探索代码库时的「搜索 → 读 → 再搜索」循环：何时停止完全由 LLM 在运行时决定，而非写死流程。
-- **`add_edge("tool_node", "llm_call")`**：工具执行完回到 LLM 再决策，形成 `llm_call ⇄ tool_node` 的循环。
+- `**init_chat_model(...)` + `bind_tools(tools)`**：把模块 1 四个 `@tool` 函数的 schema 注入 LLM。开启后，LLM 的响应里就可能带 `tool_calls`（见技术概念的「先观察」），而不再只是纯文本。
+- `**ToolNode(tools)**`：替代第 2 步手写的 `get_time` 桩。它自动读上一条消息的 `tool_calls`，分发到对应工具、执行、把结果包成 `ToolMessage` 回灌——这就是「工具调用协议」的胶水，由 LangGraph 封装好。
+- `**add_conditional_edges("llm_call", should_continue, ...)**`：这是 agent 的**心脏**。`should_continue` 只看一眼最后一条消息——有 `tool_calls` 就跳到 `tool_node`，没有就到 `END`。对标 omp 探索代码库时的「搜索 → 读 → 再搜索」循环：何时停止完全由 LLM 在运行时决定，而非写死流程。
+- `**add_edge("tool_node", "llm_call")**`：工具执行完回到 LLM 再决策，形成 `llm_call ⇄ tool_node` 的循环。
 
 **为什么 `@retry` 包在 `llm_call` 而非 `init_chat_model` 上？** `init_chat_model(...)` 是工厂——只建一次客户端对象，建失败多半是配置错（重试也没用）；而 `llm_with_tools.invoke(...)` 是真正的网络调用，每轮都可能超时/断连，这才是该重试的对象。装饰器刚好套在「这一行调用」上——这正是第 5 步埋下的 `@retry` 与第 6 步图组装的衔接点。
 
@@ -754,15 +761,15 @@ uv run uvicorn agentic_search.main:app --reload --port 8000
 # ① 列出文档（启动后应能访问，即使列表为空）
 uv run python -c '
 import httpx
-r = httpx.get("http://localhost:8000/api/documents")
+r= httpx.get("http://localhost:8000/api/documents")
 print(r.json())
 '
 
 # ② 上传一篇 PDF（把路径替换为你本地的 PDF）
 uv run python -c '
 import httpx
-files = {"file": ("paper.pdf", open("你的论文.pdf", "rb"), "application/pdf")}
-r = httpx.post("http://localhost:8000/api/ingest", files=files)
+files = {"file": ("要存到库中的文件名.pdf", open(r"论文本体.pdf", "rb"), "application/pdf")}
+r=httpx.post("http://localhost:8000/api/ingest", files=files)
 print(r.json())
 '
 
@@ -780,7 +787,7 @@ with httpx.stream("POST", "http://localhost:8000/api/query", json={"question": "
 #    换个问题：改 json 里的文字，重发即可
 uv run python -c '
 import httpx
-with httpx.stream("POST", "http://localhost:8000/api/query", json={"question": "对比语料库里两篇论文用了哪些不同的数据集？"}, timeout=60) as r:
+with httpx.stream("POST", "http://localhost:8000/api/query", json={"question": "对比语料库里两篇论文分别是什么研究方向？"}, timeout=60) as r:
     for line in r.iter_lines():
         if line:
             print(line)
@@ -815,7 +822,6 @@ def test_graph_returns_answer():
     graph = build_graph()
     result = graph.invoke({
         "messages": [HumanMessage(content="这篇论文的核心方法是什么？")],
-        "question": "这篇论文的核心方法是什么？",
     })
 
     # agent 的多轮探索（list_papers → read_paper → ...）都累加进 messages，
@@ -906,11 +912,12 @@ uv run pytest tests/ -v
 
 ## 延伸阅读
 
-- **LangGraph 官方文档（核心概念）**：https://langgraph.com.cn/concepts/low_level/
-- **LangGraph ToolNode / 工具调用**：https://langchain-ai.github.io/langgraph/how-tos/tool-calling/
-- **LangChain init_chat_model / bind_tools**：https://python.langchain.com/docs/how_to/chat_models_load/
-- **LangChain 构建 ReAct agent**：https://langchain-ai.github.io/langgraph/tutorials/introduction/
-- **FastAPI 官方教程**：https://fastapi.tiangolo.com/zh/tutorial/
-- **FastAPI CORS 中间件**：https://fastapi.tiangolo.com/zh/tutorial/cors/
-- **Pydantic 官方文档**：https://pydantic.com.cn/
-- **pydantic-settings（环境配置）**：https://pydantic.com.cn/concepts/pydantic_settings/
+- **LangGraph 官方文档（核心概念）**：[https://langgraph.com.cn/concepts/low_level/](https://langgraph.com.cn/concepts/low_level/)
+- **LangGraph ToolNode / 工具调用**：[https://langchain-ai.github.io/langgraph/how-tos/tool-calling/](https://langchain-ai.github.io/langgraph/how-tos/tool-calling/)
+- **LangChain init_chat_model / bind_tools**：[https://python.langchain.com/docs/how_to/chat_models_load/](https://python.langchain.com/docs/how_to/chat_models_load/)
+- **LangChain 构建 ReAct agent**：[https://langchain-ai.github.io/langgraph/tutorials/introduction/](https://langchain-ai.github.io/langgraph/tutorials/introduction/)
+- **FastAPI 官方教程**：[https://fastapi.tiangolo.com/zh/tutorial/](https://fastapi.tiangolo.com/zh/tutorial/)
+- **FastAPI CORS 中间件**：[https://fastapi.tiangolo.com/zh/tutorial/cors/](https://fastapi.tiangolo.com/zh/tutorial/cors/)
+- **Pydantic 官方文档**：[https://pydantic.com.cn/](https://pydantic.com.cn/)
+- **pydantic-settings（环境配置）**：[https://pydantic.com.cn/concepts/pydantic_settings/](https://pydantic.com.cn/concepts/pydantic_settings/)
+
