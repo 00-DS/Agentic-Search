@@ -1,6 +1,4 @@
 import json
-import os
-import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, File, UploadFile
@@ -41,3 +39,13 @@ async def query(req: QueryRequest):
             yield f"data: {json.dumps(f'[错误：{e}]', ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+@router.post("/ingest", response_model=IngestResponse)
+async def ingest(file: UploadFile = File(...)):
+    """上传 PDF，提取纯文本并存入 MongoDB（零文件系统依赖）。"""
+    pdf_bytes = await file.read()
+    text = parse_pdf(pdf_bytes)
+    doc_id = Path(file.filename).stem
+    store_document(doc_id, file.filename, text)
+
+    return IngestResponse(doc_id=doc_id, filename=file.filename)
