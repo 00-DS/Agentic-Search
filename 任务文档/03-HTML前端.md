@@ -525,6 +525,7 @@ uv run uvicorn agentic_search.main:app --reload --port 8000
   <script src="app.js"></script>
 </body>
 </html>
+```
 
 逐行讲解：
 
@@ -701,66 +702,83 @@ async function uploadFile() {
 
 这是本模块最核心、也最有趣的部分。真实 AI 产品（如 ChatGPT）的回答是**逐字流式出现**的，而不是等几十秒一次性弹出。本项目后端 `POST /api/query` 返回的是 **SSE 流式文本**，前端用 `fetch` + `ReadableStream` 逐块读取。
 
-### 5.1 为什么用 fetch 而非 EventSource
+### 5.1 为什么 fetch 能流式
 
-浏览器原生有一个 `EventSource` API 专门消费 SSE 流，但它有一个致命限制：**只支持 GET 请求**。本项目的提问接口是 POST（需要在请求体中发送问题内容），`EventSource` 用不了。
-
-因此用 `fetch` + `ReadableStream` 手动消费 SSE 流——这正是 ChatGPT、Claude.ai 等现代 AI 产品的做法。`fetch` 的 `response.body` 是一个 `ReadableStream`，可以拿到一个 `reader`，**一边接收一边读**。区别在于：`EventSource` 自动解析 SSE 帧；用 `fetch` 时需要自己按 `\n\n` 切分帧、解析 `event:`/`data:` 行（下一步的代码）。
+`fetch` 的 `response.body` 是一个 `ReadableStream`，可以拿到一个 `reader`，**一边接收一边读**——这正是流式所需的。
 
 ### 5.2 流式读取的核心循环
 
 ```javascript
 // 这是教学示例
 async function askQuestion() {
-  const question = questionInput.value;
-  if (!question.trim()) return;
+  const question = questionInput.value.trim();
+  if (!question) return;
 
   appendMessage("user", question);          // 先显示用户的问题
   const aiEl = appendMessage("assistant", "");// 创建空的 AI 气泡，拿引用待填充
+  const textNode = document.createTextNode(""); // 专门累积回答文字的文本节点
+  aiEl.appendChild(textNode);
 
   const res = await fetch("http://localhost:8000/api/query", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question: question }),
+    body: JSON.stringify({ question }),
   });
 
-  const reader = res.body.getReader();       // 1. 拿到流的读取器
-  const decoder = new TextDecoder();          // 2. 字节 → 文字的解码器
-  let buf = "";                               // 3. 跨包拼接的不完整帧缓冲区
+  const reader = res.body.getReader();   // 1. 拿到流的读取器
+  const decoder = new TextDecoder();      // 2. 字节 → 文字的解码器
+  let buffer = "";                        // 3. SSE 事件缓冲区（见下方解释）
 
   while (true) {
-    const { done, value } = await reader.read();  // 4. 读一块字节
-    if (done) break;                              // 5. 连接关闭，流结束
-    buf += decoder.decode(value, { stream: true }); // 6. 解码并拼入缓冲区
-    const frames = buf.split("\n\n");             // 7. SSE 帧以空行分隔
-    buf = frames.pop();                           // 8. 最后一段可能不完整，留到下次
-    for (const frame of frames) {
-      if (!frame.trim()) continue;
-      let event = "token";                        // 无 event: 行 = 默认 = 文字
-      let data = "";
-      for (const line of frame.split("\n")) {
-        if (line.startsWith("event:")) event = line.slice(6).trim();
-        else if (line.startsWith("data:")) data = line.slice(5);
+    const { done, value } = await reader.read();   // 4. 读一块字节
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buffer.indexOf("\n\n")) !== -1) { // 5. 每凑成一个完整事件就处理一个
+      const rawEvent = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      let eventType = "", dataLine = "";
+      for (const line of rawEvent.split("\n")) {
+        if (line.startsWith("event: ")) eventType = line.slice(7);
+        else if (line.startsWith("data: ")) dataLine = line.slice(6);
       }
-      if (event === "token") {
-        aiEl.textContent += JSON.parse(data);     // 9. JSON 字符串值 → 原始文字
-      } else if (event === "tool") {
-        // 10. 显示工具调用状态，如「正在调用 search_papers...」
+      if (eventType === "tool") {                       // 6a. 工具调用：显示成状态行
+        const status = document.createElement("div");
+        status.textContent = `🔧 调用工具：${dataLine}`;
+        aiEl.insertBefore(status, textNode);           // 插在回答文字之前
+      } else if (dataLine) {                            // 6b. 文字片段
+        textNode.data += JSON.parse(dataLine);         // data 是 JSON 字符串，parse 去掉引号
       }
     }
   }
+  buffer += decoder.decode();   // 7. 流结束，刷掉解码器里残余字节
 }
 ```
 
+> **关键洞察——为什么不能直接 `textContent += decode(value)`？**
+>
+> 后端 `/api/query` 返回的不是「裸文本」，而是 **SSE（Server-Sent Events）协议**——每个事件由若干行 `字段: 值` 组成，事件之间用一个**空行**（`\n\n`）分隔。它实际吐出的字节长这样：
+>
+> ```
+> event: tool
+> data: list_papers
+>
+> data: "这篇论文"
+>
+> data: "的核心方法是..."
+> ```
+>
+> 注意两点：① 文字片段的 `data:` 后面是 **JSON 编码的字符串**（带引号 `"这篇论文"`，因为后端用 `json.dumps()` 序列化，保证多行/特殊字符安全传输）；② 工具调用是单独的 `event: tool` 事件。如果像最初那样把原始字节直接糊进气泡，用户会看到字面的 `data: "你好"` 和 `event: tool`——而不是干净的文字。所以前端必须**按 `\n\n` 切事件、识别 `data:`/`event:` 前缀、再 `JSON.parse` 去引号**。
+
 逐段讲解：
-- `JSON.stringify({...})`：提问接口接收 JSON，需要先序列化成字符串，并设 `Content-Type: application/json`
-- `res.body` 是 `ReadableStream`，`.getReader()` 返回一个读取器
-- `decoder.decode(value, { stream: true })`：网络传输的是**字节**，需要 `TextDecoder` 转成中文字符串。`{ stream: true }` 是流式模式——中文字符的 UTF-8 编码可能被网络包边界截断，这个选项让解码器等待完整字符再返回
-- `buf.split("\n\n")`：SSE 协议规定每个事件以空行 `\n\n` 结尾，按它切分出完整帧
-- `buf = frames.pop()`：一个网络包可能包含半个帧、一个完整帧、或多个帧。`pop()` 取出最后一段（可能不完整），留到下次 `read()` 拼接——这是流式解析的标准技巧
-- `event:` 行声明事件类型（省略时为 `token` 即文字）；`data:` 行携带数据
-- `JSON.parse(data)`：后端用 `json.dumps` 转义了文字中的换行等特殊字符，这里还原。文字 token 的 `data` 是一个 JSON 字符串值（如 `"你好"`），`JSON.parse` 后得到原始文字
-- `event === "tool"`：工具调用事件，`data` 是工具名（如 `search_papers`）。这里可以更新 UI 显示 agent 正在探索论文
+- `JSON.stringify({ question })`：提问接口接收 JSON，需要先序列化；ES6 里键名和变量同名可简写成 `{ question }`（等价于 `{ question: question }`）
+- `res.body.getReader()`：拿到流的读取器，每次 `read()` 返回一块字节
+- `decoder.decode(value, { stream: true })`：把字节转成字符串。`{ stream: true }` 告诉解码器「后面还有数据」——遇到多字节字符（如中文）被拆在两块时，它会暂存半个字符等下一块拼完整，避免乱码
+- `buffer` 缓冲区是核心：网络一次 `read()` 到的字节，可能只是某个 SSE 事件的**一部分**（事件按 `\n\n` 分隔，但 `\n\n` 不一定恰好落在块边界上），也可能一次包含**多个**事件。所以先全攒进 `buffer`，再用 `indexOf("\n\n")` 把里面**已凑完整的**事件逐个切出来处理，没凑完的留在缓冲区等下一块
+- 事件内每行可能是 `event: tool`（工具调用）或 `data: "文字"`（文字片段）；按前缀分流
+- 工具调用（`event: tool`）：生成一个 `🔧 调用工具：xxx` 的状态 `<div>`，`insertBefore(status, textNode)` 插在回答文字**之前**——因为工具调用总是先于用它产出的文字到达，这样状态行显示在顶部、回答在下方，符合阅读顺序
+- 文字片段：`JSON.parse(dataLine)` 把 `'"你好"'` 解析回 `'你好'`（去掉外层引号），累加进 `textNode.data`。用专门的文本节点而非 `aiEl.textContent +=`，是为了避免把工具状态 `<div>` 冲掉——`textContent` 赋值会清空元素的所有子节点
+- 循环结束后的 `decoder.decode()`（不带参数）把解码器内部残余的半个字符刷出来收尾
 
 > **MDN ReadableStream 文档**：https://developer.mozilla.org/zh-CN/docs/Web/API/ReadableStream
 
@@ -779,15 +797,18 @@ function appendMessage(role, text) {
 }
 ```
 
-这样 `askQuestion` 里 `const aiEl = appendMessage("assistant", "")` 就拿到了这条 AI 消息的节点，循环中 `aiEl.textContent += chunk` 只更新它，不影响其他消息。
+这样 `askQuestion` 里 `const aiEl = appendMessage("assistant", "")` 就拿到了这条 AI 消息的节点；循环中往它里面追加文字文本节点（`textNode`）和工具状态 `<div>`，只改这一条气泡，不影响其他消息。`appendMessage` 返回引用，是「先建好容器、再流式往里填」这个套路的前提。
 
 ### 验证
 
-1. 确保后端 `POST /api/query` 已启动且返回 SSE 流式响应
+1. 确保后端 `POST /api/query` 已启动且返回流式响应
 2. 先上传一篇 PDF（步骤 4）
 3. 在输入框打字提问，回车或点发送
-4. 应该看到 AI 回答**逐字出现**，而非一次性弹出（`ReadableStream` + SSE 帧解析生效）
-5. 如果 agent 调用了工具（如 `search_papers`），应能看到工具调用状态提示
+4. 应该看到 AI 回答**逐字出现**，而非一次性弹出；回答上方可能出现 `🔧 调用工具：list_papers` 之类的状态行（agent 自主探索论文时产生）
+
+> **关于回答里的星号**：AI 的回答可能含 Markdown 标记（如 `**重点**`），但本前端用 `textContent` 渲染纯文本、不解析 Markdown，所以会原样显示 `**重点**`。这是教学项目的刻意简化——想要粗体效果需要额外的 Markdown 解析库，不在本模块范围。
+
+> **如果后端还没实现流式接口**：可先临时把 `askQuestion` 改成非流式（`await res.json()` 一次性取结果再显示），等 [模块 2](./02-LangGraph-Agent.md) 完成后切回流式。
 
 ---
 
@@ -807,14 +828,18 @@ async function consolidateMemory() {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: currentSessionId }),
   });
-  const data = await res.json();   // 后端返回 {status: "ok", l2_id: "..."}
-  if (data.status === "ok") {
+  const data = await res.json();   // 后端返回 {status, l2_id}
+  if (data.status === "ok") {            // 模块 4 接入真实整合后走这条
     alert("L2 记忆整合完成");
+  } else if (data.status === "pending") { // 模块 2 阶段：后端占位返回 pending
+    alert("已发送整合请求，L2 整合逻辑将在模块 4 接入后生效");
+  } else {
+    alert("整合失败：" + JSON.stringify(data));
   }
 }
 ```
 
-讲解：这与一个普通的 POST 请求没有区别——重点在于**它触发的后端逻辑**（把该会话的 L1 事实整合成 L2 摘要）。按钮的存在让 L2 触发变得可见、可控，便于教学观察。
+讲解：fetch + JSON 的写法和普通 POST 请求一样，重点在 `status` 的分支处理。后端这个端点现在（模块 2）是**占位**——收到请求、识别 `session_id`、返回明确的 `pending` 状态，但还**没真正做整合**（整合逻辑属于模块 4 的 `memory/store.py`）。前端把 `pending` 当作「请求已收到、功能待接入」处理，这样在模块 3 阶段就能验证整条链路（请求发出 → 后端响应 → 前端正确分支）是对的。等模块 4 把后端占位换成真实整合、返回 `ok`，前端的 `=== "ok"` 分支自然生效，无需改前端。
 
 ### 6.2 绑定
 
@@ -825,10 +850,18 @@ consolidateBtn.addEventListener("click", consolidateMemory);
 
 ### 验证
 
-1. 连续提问几轮（产生若干 L1 记忆）
-2. 点击「整合会话记忆（L2）」按钮
-3. 在 MongoDB Compass 的 `agentic_search.memories` 集合中应出现一条 L2 记录
-4. 再次提问「我之前问了什么」，Agent 应能基于 L2 记忆回答
+**模块 3 阶段（现在就能验证）——证明前端逻辑正确：**
+
+1. 点击「整合会话记忆（L2）」按钮
+2. 应弹出「已发送整合请求，L2 整合逻辑将在模块 4 接入后生效」（后端返回 `pending`，前端正确走到该分支）
+3. 关掉后端再点击，应弹出整合失败提示（`fetch` 报错被 `catch` 捕获）——若你的 `consolidateMemory` 还没加 `try/catch`，可参照步骤 4 的 `uploadFile` 补上
+
+**模块 4 阶段（后端接入真实整合后验证）——证明 L2 功能生效：**
+
+4. 连续提问几轮（产生若干 L1 记忆）
+5. 点击按钮 → 弹出「L2 记忆整合完成」（后端返回 `ok`）
+6. 在 MongoDB Compass 的 `agentic_search.memories` 集合中应出现一条 L2 记录
+7. 再次提问「我之前问了什么」，Agent 应能基于 L2 记忆回答
 
 ---
 
@@ -846,7 +879,7 @@ const uploadBtn   = document.getElementById("upload-btn");
 const consolidateBtn = document.getElementById("consolidate-btn");
 const queryForm   = document.getElementById("query-form");
 const questionInput  = document.getElementById("question");
-const messagesEl  = document.getElementById("messages");
+const currentSessionId = "demo-session"; // 会话 ID，模块 4 替换为真实会话管理
 
 // --- 核心函数 ---
 async function uploadFile() { /* 步骤 4 */ }
@@ -864,7 +897,8 @@ queryForm.addEventListener("submit", (e) => {
 ```
 
 注意几点：
-- `API` 地址集中定义为一个常量，方便统一修改
+- `API` 地址集中定义为一个常量，方便统一修改。步骤 4/5/6 为了独立讲解写的是完整 URL，真正组装 `app.js` 时统一改成 `` `${API}/api/...` ``
+- `currentSessionId` 现在写死成 `"demo-session"`，保证模块 3 阶段 `consolidateMemory` 能正常发请求；模块 4 接入会话管理后替换为真实逻辑
 - 表单的 `submit` 事件里要 `e.preventDefault()`——否则浏览器会用默认方式提交表单（导致页面刷新），而我们想用 `fetch` 异步提交
 
 ---
@@ -876,7 +910,7 @@ queryForm.addEventListener("submit", (e) => {
 1. **上传 PDF**：点文件选择 → 选一个 PDF → 点「上传 PDF」→ 出现成功提示
 2. **提问**：输入框打字 → 回车或点发送 → 你的问题出现在聊天区
 3. **流式回答**：AI 回复**逐字出现**，而非一次性弹出（`ReadableStream` 生效）
-4. **整合记忆**：连续提问几轮后，点「整合会话记忆（L2）」→ MongoDB Compass 中 `memories` 集合出现 L2 记录
+4. **整合记忆**：点「整合会话记忆（L2）」→ 弹出「已发送整合请求」（后端返回 `pending`，前端分支正确）；真正的 L2 整合效果在模块 4 接入后验证
 5. **错误处理**：关掉后端再提问 → 看到 fetch 报错提示（而非页面崩溃）
 
 全部通过，前端模块完成。
@@ -893,9 +927,9 @@ queryForm.addEventListener("submit", (e) => {
 
 前端（本地文件或 `localhost:3000`）访问 `localhost:8000` 会跨源。确认后端 `main.py` 已挂载 `CORSMiddleware`。开发阶段后端允许所有来源即可。
 
-### Q：流式提问不工作（一次性返回 / 卡住 / 乱码）
+### Q：流式提问不工作（一次性返回 / 卡住）
 
-确认四点：① 后端 `/api/query` 返回的是 SSE 流式响应（`StreamingResponse` + `text/event-stream`），而非普通 JSON；② 前端用 `res.body.getReader()` 逐块读，而非 `await res.json()` 一次性读；③ `decoder.decode(value, { stream: true })` 不能漏 `stream: true`，否则中文字符跨包截断会乱码；④ `buf.split("\n\n")` 后 `frames.pop()` 留不完整帧——如果漏了这步，最后一段不完整的帧会解析失败。
+确认三点：① 后端 `/api/query` 返回的是流式响应（`StreamingResponse`），而非普通 JSON；② 前端用 `res.body.getReader()` 逐块读，而非 `await res.json()` 一次性读；③ 没有把响应包进一个会等完整结果的封装里。
 
 ### Q：上传文件后端报「缺少 boundary」
 
