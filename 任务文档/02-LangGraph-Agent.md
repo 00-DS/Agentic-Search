@@ -803,9 +803,47 @@ with httpx.stream("POST", "http://localhost:8000/api/query", json={"question": "
 
 ---
 
-## 第 11 步：编写测试（pytest）
+## 第 11 步：用 FastAPI 自带文档界面直观感受你的 API
 
-### 11.1 测试图逻辑
+启动服务后，你已经用第 10 步的 `httpx` 命令验证了每个端点能跑。FastAPI 还提供更直观的方式——两个自动生成的 API 文档界面，零额外代码。这一步先用它们**手动感受一遍**，下一步（第 12 步）再把验证固化成 pytest 自动化测试。
+
+### 11.1 两个文档界面：/redoc 与 /docs
+
+FastAPI 从你的**类型标注 + Pydantic 模型**自动生成一份 OpenAPI 规范（描述 REST API 的标准格式），并据此提供**两个**界面，分工不同：
+
+- **`http://localhost:8000/redoc`** —— **文档视图**（只读）。三栏布局：左侧端点目录、中间参数/响应结构详情、右侧示例。适合**通读全部 API 长什么样**，排版漂亮，但发不了请求。
+- **`http://localhost:8000/docs`** —— **交互视图**（Swagger UI）。每个端点能展开 → 点 **Try it out** → 填参数 → **Execute** → 看真实返回的 JSON / SSE。适合**实际试一遍**。
+
+两个界面背后共用同一份 `/openapi.json`（你可以直接访问这个 URL 看原始 JSON 规范）。改了代码 → 规范更新 → 两个界面同步更新，零维护成本。日常调试用 `/docs`（能试请求）；想看全貌或分享给别人读用 `/redoc`（排版好）。
+
+> 📖 FastAPI 自动文档官方教程：[https://fastapi.tiangolo.com/zh/tutorial/first-steps/#interactive-api-docs](https://fastapi.tiangolo.com/zh/tutorial/first-steps/#interactive-api-docs)
+
+### 11.2 在 /docs 里逐个试你的 4 个端点
+
+打开 `http://localhost:8000/docs`，点开每个端点 → **Try it out** → 填参数 → **Execute**，亲眼确认每个端点能正常工作：
+
+- **GET /api/documents** —— 返回 JSON 文档列表（第一次为空数组 `[]`，上传 PDF 后能看到条目）。
+- **POST /api/ingest** —— 在请求体里上传一个 PDF 文件 → 返回 `{"doc_id": "...", "filename": "..."}`。
+- **POST /api/consolidate** —— 填 `session_id` → 返回 `{"status": "pending", "l2_id": ""}`（模块 4 才接入真实整合逻辑，现在诚实返回 `pending`）。
+- **POST /api/query** —— 填问题（如「你好」）→ **等几秒**（agent 在跑 ReAct 循环）→ 返回一整段 SSE 文本。
+
+### 11.3 /api/query 在 Swagger 里的样子（一个要注意的局限）
+
+`/api/query` 的 Execute 会**等 agent 完整跑完后**，一次性把全部 SSE 帧文本显示出来——你会看到一长串 `data: "\u4f60\u597d"` 这样的行，这就是 SSE 流的 wire 格式（第 8 步讲过）。
+
+注意：**Swagger 会等整段跑完才一次性显示，而不是逐字流式出现**。要感受「逐字打字」的流式体验，用第 10 步的 `httpx.stream` 命令、或模块 3 的前端界面。Swagger 在这里的价值是**验证端点能跑 + 直观看到 wire 格式全文**，而非看流式动画。
+
+### 11.4 为什么 Pydantic 模型这么重要——第二个回报
+
+注意面板里每个端点的请求/响应结构——`QueryRequest` 的 `question` 字段、`IngestResponse` 的 `doc_id`/`filename`——这些全来自第 7 步 `schemas.py` 里定义的 Pydantic 模型。这就是「认真定义模型」的第二个回报：除了第 7 步讲过的自动校验（缺字段返回 422），还自动变成了这个**人能读的交互文档**。改模型，面板同步更新——你定义一次，校验与文档两处受益。
+
+现在你已经亲手试过每个端点、确认它们正常工作。下一步（第 12 步）把这些手动验证**固化成 pytest 自动化测试**——把「每次改代码手动点一遍」升级成「每次改代码自动跑一遍」。
+
+---
+
+## 第 12 步：编写测试（pytest）
+
+### 12.1 测试图逻辑
 
 新建 `tests/test_graph.py`：
 
@@ -830,7 +868,7 @@ def test_graph_returns_answer():
 
 **观察 agent 的探索轨迹**：把 `result["messages"]` 逐条打印（或在服务端终端看日志），能看到 agent 的多轮决策——比如先 `list_papers` 看有哪些论文、再 `search_papers("dataset|corpus", doc_id="paper_001")` 定位、最后 `read_paper` 取证。故意问一个**跨论文**问题（如「对比语料库里两篇论文的数据集差异」），观察 agent 在多篇论文间反复跳转的探索路径——这正是 agentic search 区别于「读一篇全文」的核心。
 
-### 11.2 测试 API 接口
+### 12.2 测试 API 接口
 
 新建 `tests/test_api.py`，用 FastAPI 的 `TestClient`（无需真正启动服务器即可测试路由）：
 
@@ -877,7 +915,7 @@ uv run pytest tests/ -v
 - [ ] `uv run python -c '...'`（httpx.get）访问 `/api/documents` 返回 JSON 列表
 - [ ] `uv run python -c '...'`（httpx.post files=）调用 `/api/ingest` 返回 `doc_id` 与 `filename`
 - [ ] `uv run python -c '...'`（httpx.stream）调用 `/api/query` 返回 SSE 流，文字 token 逐个到达（`data: "\uXXXX"` JSON 编码行），`event: tool` 行标记工具调用（`data: {"name": "..."}` 结构化对象）
-- [ ] 访问 `http://localhost:8000/docs` 能看到 4 个端点的交互式文档
+- [ ] 访问 `http://localhost:8000/docs` 和 `/redoc`，分别看到交互式 API 文档（能 Try it out）与只读文档视图
 - [ ] `uv run pytest tests/ -v` 全部绿色
 
 ---
