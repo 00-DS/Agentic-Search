@@ -742,9 +742,10 @@ async function askQuestion() {
         if (line.startsWith("event: ")) eventType = line.slice(7);
         else if (line.startsWith("data: ")) dataLine = line.slice(6);
       }
-      if (eventType === "tool") {                       // 6a. 工具调用：显示成状态行
+      if (eventType === "tool") {                       // 6a. 工具调用：data 是 {"name":"..."}
+        const toolName = JSON.parse(dataLine).name;     // 解析 JSON 取工具名
         const status = document.createElement("div");
-        status.textContent = `🔧 调用工具：${dataLine}`;
+        status.textContent = `🔧 调用工具：${toolName}`;
         aiEl.insertBefore(status, textNode);           // 插在回答文字之前
       } else if (dataLine) {                            // 6b. 文字片段
         textNode.data += JSON.parse(dataLine);         // data 是 JSON 字符串，parse 去掉引号
@@ -755,20 +756,18 @@ async function askQuestion() {
 }
 ```
 
-> **关键洞察——为什么不能直接 `textContent += decode(value)`？**
->
 > 后端 `/api/query` 返回的不是「裸文本」，而是 **SSE（Server-Sent Events）协议**——每个事件由若干行 `字段: 值` 组成，事件之间用一个**空行**（`\n\n`）分隔。它实际吐出的字节长这样：
 >
 > ```
 > event: tool
-> data: list_papers
+> data: {"name": "list_papers"}
 >
-> data: "这篇论文"
+> data: "\u8fd9\u7bc7\u8bba\u6587"
 >
-> data: "的核心方法是..."
+> data: "\u7684\u6838\u5fc3\u65b9\u6cd5..."
 > ```
 >
-> 注意两点：① 文字片段的 `data:` 后面是 **JSON 编码的字符串**（带引号 `"这篇论文"`，因为后端用 `json.dumps()` 序列化，保证多行/特殊字符安全传输）；② 工具调用是单独的 `event: tool` 事件。如果像最初那样把原始字节直接糊进气泡，用户会看到字面的 `data: "你好"` 和 `event: tool`——而不是干净的文字。所以前端必须**按 `\n\n` 切事件、识别 `data:`/`event:` 前缀、再 `JSON.parse` 去引号**。
+> 注意三点：① **所有 `data:` 字段都是 JSON 编码的**——文字 token 是 JSON 字符串（中文会被 ASCII 转义成 `\u8fd9...`，引号和特殊字符也被安全转义）；② 工具调用是 `event: tool` + `data: {"name": "工具名"}`（结构化 JSON 对象，工具名在 `.name` 字段，不是裸字符串）；③ 对任意 `data:` 行一律 `JSON.parse` 即可还原原始值，文字得到字符串、工具调用得到带 `.name` 的对象。如果像最初那样把原始字节直接糊进气泡，用户会看到字面的 `data: "\u4f60\u597d"` 和 `event: tool`——而不是干净的文字。所以前端必须**按 `\n\n` 切事件、识别 `data:`/`event:` 前缀、再 `JSON.parse` 还原**。
 
 逐段讲解：
 - `JSON.stringify({ question })`：提问接口接收 JSON，需要先序列化；ES6 里键名和变量同名可简写成 `{ question }`（等价于 `{ question: question }`）
@@ -776,7 +775,7 @@ async function askQuestion() {
 - `decoder.decode(value, { stream: true })`：把字节转成字符串。`{ stream: true }` 告诉解码器「后面还有数据」——遇到多字节字符（如中文）被拆在两块时，它会暂存半个字符等下一块拼完整，避免乱码
 - `buffer` 缓冲区是核心：网络一次 `read()` 到的字节，可能只是某个 SSE 事件的**一部分**（事件按 `\n\n` 分隔，但 `\n\n` 不一定恰好落在块边界上），也可能一次包含**多个**事件。所以先全攒进 `buffer`，再用 `indexOf("\n\n")` 把里面**已凑完整的**事件逐个切出来处理，没凑完的留在缓冲区等下一块
 - 事件内每行可能是 `event: tool`（工具调用）或 `data: "文字"`（文字片段）；按前缀分流
-- 工具调用（`event: tool`）：生成一个 `🔧 调用工具：xxx` 的状态 `<div>`，`insertBefore(status, textNode)` 插在回答文字**之前**——因为工具调用总是先于用它产出的文字到达，这样状态行显示在顶部、回答在下方，符合阅读顺序
+- 工具调用（`event: tool`）：`data` 是 `{"name": "list_papers"}` 这样的 JSON 对象，`JSON.parse` 后取 `.name` 得到工具名，生成 `🔧 调用工具：list_papers` 状态 `<div>`，`insertBefore(status, textNode)` 插在回答文字**之前**——因为工具调用总是先于用它产出的文字到达，这样状态行显示在顶部、回答在下方，符合阅读顺序
 - 文字片段：`JSON.parse(dataLine)` 把 `'"你好"'` 解析回 `'你好'`（去掉外层引号），累加进 `textNode.data`。用专门的文本节点而非 `aiEl.textContent +=`，是为了避免把工具状态 `<div>` 冲掉——`textContent` 赋值会清空元素的所有子节点
 - 循环结束后的 `decoder.decode()`（不带参数）把解码器内部残余的半个字符刷出来收尾
 
