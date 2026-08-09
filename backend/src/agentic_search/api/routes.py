@@ -33,7 +33,7 @@ async def query(req: QueryRequest):
                 for tc in chunk.tool_call_chunks:
                     if tc.get("name"):
                         yield ServerSentEvent(event="tool", data={"name": tc["name"]})
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 流错误边界：异常转成 SSE 错误事件，防连接静默死
         yield ServerSentEvent(data=f"[错误：{e}]")
 
 @router.post("/ingest", response_model=IngestResponse)
