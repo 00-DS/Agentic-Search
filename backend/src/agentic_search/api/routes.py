@@ -1,8 +1,7 @@
-import json
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 from langchain_core.messages import AIMessageChunk, HumanMessage
 
 from agentic_search.agents.graph import build_graph
@@ -18,27 +17,24 @@ from agentic_search.services.documents import list_documents, parse_pdf, store_d
 router = APIRouter(prefix="/api")
 graph = build_graph()
 
-@router.post("/query")
+@router.post("/query", response_class=EventSourceResponse)
 async def query(req: QueryRequest):
     """向 Agent 提问，以 SSE 流式返回回答。读哪篇论文由 agent 自主决定。"""
-    async def event_stream():
-        try:
-            async for chunk, metadata in graph.astream(
-                {"messages": [HumanMessage(content=req.question)]},
-                stream_mode="messages"
-            ):
-                if not isinstance(chunk, AIMessageChunk):
-                    continue
-                if chunk.content:
-                    yield f"data: {json.dumps(chunk.content, ensure_ascii=False)}\n\n"
-                elif chunk.tool_call_chunks:
-                    for tc in chunk.tool_call_chunks:
-                        if tc.get("name"):
-                            yield f"event: tool\ndata: {tc['name']}\n\n"
-        except Exception as e:
-            yield f"data: {json.dumps(f'[错误：{e}]', ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    try:
+        async for chunk, metadata in graph.astream(
+            {"messages": [HumanMessage(content=req.question)]},
+            stream_mode="messages",
+        ):
+            if not isinstance(chunk, AIMessageChunk):
+                continue                              # 跳过 ToolMessage 等非 LLM chunk
+            if chunk.content:                         # 文字 token：JSON 编码传输
+                yield ServerSentEvent(data=chunk.content)
+            elif chunk.tool_call_chunks:              # LLM 决定调工具
+                for tc in chunk.tool_call_chunks:
+                    if tc.get("name"):
+                        yield ServerSentEvent(event="tool", data={"name": tc["name"]})
+    except Exception as e:
+        yield ServerSentEvent(data=f"[错误：{e}]")
 
 @router.post("/ingest", response_model=IngestResponse)
 async def ingest(file: UploadFile):
