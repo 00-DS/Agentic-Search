@@ -554,7 +554,7 @@ async def query(req: QueryRequest):
 
 上面的代码用 SSE 格式推送数据。SSE 协议与流式输出的概念已在开头的[技术概念](#技术概念)段介绍——这里只看这个端点具体怎么用。
 
-> 本项目用两类事件，都经 `ServerSentEvent` 的 `data=` 字段产出，框架统一做 JSON 序列化（字符串加引号、非 ASCII 字符转义为 `\uXXXX`、dict 编码成 JSON 对象）。这保证了多行文字、特殊字符安全传输——SSE 帧不会被换行撕裂。文字 token 是默认事件（`data: "\u4f60\u597d"`）；工具调用是命名事件（`event: tool`），`data` 是结构化对象 `{"name": "search_papers"}`——把工具名放在对象字段里，对齐 Vercel AI SDK、OpenAI streaming、LangChain 把工具调用作为结构化 JSON 对象传输的惯例（这些协议唯一的原始字符串用法是流终止哨兵 `data: [DONE]`，对应 `ServerSentEvent` 的另一个字段 `raw_data=`，本端点用不到）。
+> 本项目用两类事件，都经 `ServerSentEvent` 的 `data=` 字段产出，框架统一做 JSON 序列化（字符串加引号、非 ASCII 转义为 `\uXXXX`、dict 编码成 JSON 对象）。这保证了多行文字、特殊字符安全传输——SSE 帧不会被换行撕裂。文字 token 是默认事件（`data: "\u4f60\u597d"`）；工具调用是命名事件（`event: tool`），`data` 是结构化对象 `{"name": "search_papers"}`——把工具名放在对象字段里，对齐 Vercel AI SDK、OpenAI streaming、LangChain 把工具调用作为结构化 JSON 对象传输的惯例（`ServerSentEvent` 的另一个字段 `raw_data=` 专用于 `[DONE]` 哨兵等预格式化值，这类无语义的控制信号才走原始字符串；本端点的文字与工具名都是有语义的 JSON 值，统一走 `data=`）。
 >
 > 前端的处理规则因此很统一：对任意 `data:` 行一律 `JSON.parse`——文字事件得到字符串、工具事件得到对象、按 `event:` 是否为 `tool` 分支。流结束时后端关闭连接，前端 `reader.read()` 收到 `done: true` 即知结束——不需要单独的结束事件。
 
