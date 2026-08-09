@@ -51,7 +51,7 @@
 
 **流式输出（Streaming）** 是服务器「边生成边发送」、客户端「边接收边显示」的数据传输方式，与「生成完毕再一次性返回」相对。LLM 生成回答需要数秒到数十秒——如果等整句话生成完再返回，用户面对一片空白等待很久；流式则让每个字在生成的瞬间就到达浏览器，用户看到文字逐字出现。本项目用 LangGraph 的 `graph.astream(stream_mode="messages")`：DeepSeek 每生成一个 token（文字的最小单位），LangGraph 就通过回调把它推出来，后端立即 yield 给浏览器——不等整句、不等整段、不等整个 ReAct 循环跑完。
 
-**SSE（Server-Sent Events）** 是一种服务器向浏览器单向推送数据的 HTTP 协议格式。每条事件由若干行组成：`event:` 行声明事件类型（可省略，省略时为默认事件），`data:` 行携带数据，事件之间以空行 `\n\n` 分隔。浏览器原生的 `EventSource` API 能自动解析 SSE 帧，但它只支持 GET 请求；本项目的提问接口是 POST（需要在请求体中发送问题），因此前端用 `fetch` + `ReadableStream.getReader()` 手动读取并解析 SSE 帧——这正是 ChatGPT、Claude.ai 等现代 AI 产品的做法。第 8 步的 `/api/query` 端点用 FastAPI 的 `StreamingResponse` 返回 `text/event-stream` 格式的 SSE 流。
+**SSE（Server-Sent Events）** 是一种服务器向浏览器单向推送数据的 HTTP 协议格式。每条事件由若干行组成：`event:` 行声明事件类型（可省略，省略时为默认事件），`data:` 行携带数据，事件之间以空行 `\n\n` 分隔。浏览器原生的 `EventSource` API 能自动解析 SSE 帧，但它只支持 GET 请求；本项目的提问接口是 POST（需要在请求体中发送问题），因此前端用 `fetch` + `ReadableStream.getReader()` 手动读取并解析 SSE 帧——这正是 ChatGPT、Claude.ai 等现代 AI 产品的做法。第 8 步的 `/api/query` 端点用 FastAPI 的 `ServerSentEvent` 事件对象（经 `EventSourceResponse` 按序返回）产出 `text/event-stream` 格式的 SSE 流——`ServerSentEvent` 是 FastAPI 的 SSE 原语，把每个事件封装成结构化对象，由框架序列化成 wire 帧，替代手写字符串拼接。
 
 > 更多技术概念见 [概念速查](./概念速查.md)。
 
@@ -501,12 +501,11 @@ Pydantic 在这里的作用是**数据校验**：当请求体的 `question` 字�
 
 ```python
 # api/routes.py —— 教学示例：4 个 HTTP 端点
-import json
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
-from langchain_core.messages import HumanMessage, AIMessageChunk
+from fastapi.sse import EventSourceResponse, ServerSentEvent
+from langchain_core.messages import AIMessageChunk, HumanMessage
 
 from agentic_search.agents.graph import build_graph
 from agentic_search.services.documents import parse_pdf, list_documents, store_document
@@ -533,32 +532,31 @@ graph = build_graph()
 这是核心接口。前端通过 SSE（Server-Sent Events）接收逐步推送的回答。
 
 ```python
-@router.post("/query")
+@router.post("/query", response_class=EventSourceResponse)
 async def query(req: QueryRequest):
     """向 Agent 提问，以 SSE 流式返回回答。读哪篇论文由 agent 自主决定。"""
-    async def event_stream():
-        try:
-            async for chunk, metadata in graph.astream(
-                {"messages": [HumanMessage(content=req.question)]},
-                stream_mode="messages"
-            ):
-                if not isinstance(chunk, AIMessageChunk):
-                    continue                    # 跳过 ToolMessage 等非 LLM chunk
-                if chunk.content:               # 文字 token
-                    yield f"data: {json.dumps(chunk.content, ensure_ascii=False)}\n\n"
-                elif chunk.tool_call_chunks:     # LLM 决定调工具
-                    for tc in chunk.tool_call_chunks:
-                        if tc.get("name"):
-                            yield f"event: tool\ndata: {tc['name']}\n\n"
-        except Exception as e:
-            yield f"data: {json.dumps(f'[错误：{e}]', ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    try:
+        async for chunk, metadata in graph.astream(
+            {"messages": [HumanMessage(content=req.question)]},
+            stream_mode="messages",
+        ):
+            if not isinstance(chunk, AIMessageChunk):
+                continue                              # 跳过 ToolMessage 等非 LLM chunk
+            if chunk.content:                         # 文字 token：JSON 编码传输
+                yield ServerSentEvent(data=chunk.content)
+            elif chunk.tool_call_chunks:              # LLM 决定调工具
+                for tc in chunk.tool_call_chunks:
+                    if tc.get("name"):
+                        yield ServerSentEvent(event="tool", data={"name": tc["name"]})
+    except Exception as e:
+        yield ServerSentEvent(data=f"[错误：{e}]")
 ```
 
 上面的代码用 SSE 格式推送数据。SSE 协议与流式输出的概念已在开头的[技术概念](#技术概念)段介绍——这里只看这个端点具体怎么用。
 
-本项目用两种事件：文字 token 是默认事件（`data: "你"\n\n`），数据是 JSON 字符串值——`json.dumps` 转义了文字中的换行，防止 SSE 帧被撕裂；工具调用用命名事件（`event: tool\ndata: search_papers\n\n`），工具名是简单标识符，无需 JSON 包裹。流结束时后端关闭连接，前端 `reader.read()` 收到 `done: true` 即知结束——不需要单独的结束事件。
+> 本项目用两类事件，都经 `ServerSentEvent` 的 `data=` 字段产出，框架统一做 JSON 序列化（字符串加引号、非 ASCII 字符转义为 `\uXXXX`、dict 编码成 JSON 对象）。这保证了多行文字、特殊字符安全传输——SSE 帧不会被换行撕裂。文字 token 是默认事件（`data: "\u4f60\u597d"`）；工具调用是命名事件（`event: tool`），`data` 是结构化对象 `{"name": "search_papers"}`——把工具名放在对象字段里，对齐 Vercel AI SDK、OpenAI streaming、LangChain 把工具调用作为结构化 JSON 对象传输的惯例（这些协议唯一的原始字符串用法是流终止哨兵 `data: [DONE]`，对应 `ServerSentEvent` 的另一个字段 `raw_data=`，本端点用不到）。
+>
+> 前端的处理规则因此很统一：对任意 `data:` 行一律 `JSON.parse`——文字事件得到字符串、工具事件得到对象、按 `event:` 是否为 `tool` 分支。流结束时后端关闭连接，前端 `reader.read()` 收到 `done: true` 即知结束——不需要单独的结束事件。
 
 ### 8.2 POST /api/ingest（上传 PDF）
 
@@ -694,7 +692,7 @@ async def consolidate(req: ConsolidateRequest):
 
 这是分层架构的体现：HTTP 层在模块 2 就规划好**全部 4 个端点的契约**（路径、请求体、响应体），即使某个端点的业务逻辑要到后续模块才实现。这样前端（模块 3）可以提前对接所有接口，不必等记忆模块完成。占位返回明确状态，模块 4 接入真实逻辑时只需替换函数体。
 
-> 📖 FastAPI StreamingResponse 文档：[https://fastapi.tiangolo.com/zh/advanced/custom-response/](https://fastapi.tiangolo.com/zh/advanced/custom-response/)
+> 📖 FastAPI SSE（ServerSentEvent / EventSourceResponse）官方教程：[https://fastapi.tiangolo.com/zh/tutorial/server-sent-events/](https://fastapi.tiangolo.com/zh/tutorial/server-sent-events/)
 
 ---
 
@@ -773,8 +771,8 @@ r=httpx.post("http://localhost:8000/api/ingest", files=files)
 print(r.json())
 '
 
-# ③ 提问（SSE 流式）——逐行读取，看到 data: 行就是文字 token、event: tool 行是工具调用
-#    timeout=60 因为 agent 要多轮调用工具才回答，默认 5 秒不够
+# ③ 提问（SSE 流式）——逐行读取：data: 行是 JSON 编码（文字形如 data: "\u4f60\u597d"），
+#    event: tool 行紧跟 data: {"name":"工具名"}（结构化对象）；timeout=60 因 agent 多轮调工具，默认 5 秒不够
 uv run python -c '
 import httpx
 with httpx.stream("POST", "http://localhost:8000/api/query", json={"question": "TiMem的核心方法是什么？"}, timeout=60) as r:
@@ -783,8 +781,8 @@ with httpx.stream("POST", "http://localhost:8000/api/query", json={"question": "
             print(line)
 '
 
-# ④ 跨论文提问——观察 agent 自主调 list_papers → search_papers → read_paper
-#    换个问题：改 json 里的文字，重发即可
+# ④ 跨论文提问——SSE 流里会连续出现多条 event: tool（每条紧跟 data: {"name":"..."}），
+#    揭示 agent 自主调 list_papers → search_papers → read_paper 的多轮路径；换问题改 json 重发即可
 uv run python -c '
 import httpx
 with httpx.stream("POST", "http://localhost:8000/api/query", json={"question": "对比语料库里两篇论文分别是什么研究方向？"}, timeout=60) as r:
@@ -800,7 +798,7 @@ with httpx.stream("POST", "http://localhost:8000/api/query", json={"question": "
 
 - `/api/documents` 返回文档列表（JSON 数组）。
 - `/api/ingest` 返回 `{"doc_id": "...", "filename": "..."}`。
-- `/api/query` 返回 SSE 流：文字 token 逐个到达（`data: "..."` 行），`event: tool` 行标记工具调用；服务端终端可看到 `[retry]` 重试日志与 agent 多轮工具调用的轨迹。
+- `/api/query` 返回 SSE 流：文字 token 逐个到达（`data: "\uXXXX"` 行，JSON 编码），`event: tool` 行标记工具调用（紧跟 `data: {"name": "..."}` 结构化对象）；服务端终端可看到 `[retry]` 重试日志与 agent 多轮工具调用的轨迹。
 - 访问 `http://localhost:8000/docs` 可看到 FastAPI 自动生成的交互式 API 文档。
 
 ---
@@ -878,7 +876,7 @@ uv run pytest tests/ -v
 - [ ] `uv run uvicorn agentic_search.main:app --reload --port 8000` 成功启动
 - [ ] `uv run python -c '...'`（httpx.get）访问 `/api/documents` 返回 JSON 列表
 - [ ] `uv run python -c '...'`（httpx.post files=）调用 `/api/ingest` 返回 `doc_id` 与 `filename`
-- [ ] `uv run python -c '...'`（httpx.stream）调用 `/api/query` 返回 SSE 流，文字 token 逐个到达（`data: "..."` 行），`event: tool` 行标记工具调用
+- [ ] `uv run python -c '...'`（httpx.stream）调用 `/api/query` 返回 SSE 流，文字 token 逐个到达（`data: "\uXXXX"` JSON 编码行），`event: tool` 行标记工具调用（`data: {"name": "..."}` 结构化对象）
 - [ ] 访问 `http://localhost:8000/docs` 能看到 4 个端点的交互式文档
 - [ ] `uv run pytest tests/ -v` 全部绿色
 
