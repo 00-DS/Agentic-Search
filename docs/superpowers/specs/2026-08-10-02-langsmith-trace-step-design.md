@@ -59,7 +59,7 @@ from dotenv import load_dotenv; load_dotenv()
 
 ### 2.4 无害性
 
-`TRACING=false`（默认）时 LangSmith 追踪不启动，`load_dotenv()` 本身只注入已存在的 .env 变量到 os.environ（不覆盖已有的系统环境变量，默认 `override=False`）。**不改 .env 的学生，服务行为完全不变。**
+`TRACING=true`（默认）但 API Key 为空时，langsmith SDK 检测到缺失 key 静默跳过（不报错、不追踪）。`load_dotenv()` 本身只注入已存在的 .env 变量到 os.environ（不覆盖已有的系统环境变量，默认 `override=False`）。**未填 API Key 的学生，服务行为完全不变。**
 
 ## 3. 设计
 
@@ -102,13 +102,13 @@ from agentic_search.api.routes import router
 
 ```env
 
-# LangSmith 追踪（可选——改为 true 并填入 API Key 即开启）
-LANGSMITH_TRACING = false
+# LangSmith 追踪（填入 API Key 即开启——TRACING 已默认 true）
+LANGSMITH_TRACING = true
 LANGSMITH_API_KEY = 
 LANGSMITH_PROJECT = agentic-search
 ```
 
-默认 `false`，学生不想用 LangSmith 就不动这几行，零影响。
+默认 `true`——学生注册后只需填入自己的 API Key 即开启追踪，无需再改 TRACING 开关。未填 API Key 时 langsmith SDK 检测到缺失 key 会静默跳过（不报错、不追踪），零影响。
 
 > 注：`LANGSMITH_*` 不进 `config.py` 的 Settings 类——它们由 langsmith SDK 直接从 os.environ 读，不经 pydantic-settings。`load_dotenv()` 桥接把 .env 的值注入 os.environ，SDK 自己取。
 
@@ -177,8 +177,8 @@ LangSmith 是 LangChain 团队的追踪/可观测平台。LangGraph 与 LangSmit
 
 ### 4.1 代码验证
 
-- **不改 .env（TRACING=false）**：`uv run uvicorn agentic_search.main:app --reload` 启动正常，所有端点行为不变，`load_dotenv()` 无害运行。
-- **TRACING=true + 有效 key**：跑一次 query → smith.langchain.com → `agentic-search` 项目 → 出现 trace，展开能看到 `llm_call` 与 `tool_node` 的嵌套。
+- **未填 API Key（TRACING=true 但 key 空）**：langsmith SDK 静默跳过追踪，`uv run uvicorn agentic_search.main:app --reload` 启动正常，所有端点行为不变，`load_dotenv()` 无害运行。
+- **填入有效 key（TRACING=true）**：跑一次 query → smith.langchain.com → `agentic-search` 项目 → 出现 trace，展开能看到 `llm_call` 与 `tool_node` 的嵌套。
 - **现有测试**：`uv run pytest tests/ -v` 仍全部通过（`load_dotenv()` 不影响测试）。
 
 ### 4.2 文档验证
