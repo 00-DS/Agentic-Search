@@ -1,22 +1,12 @@
-import re
-
 from langchain.tools import tool
 
 from agentic_search.services.documents import (
-    _documents_collection,
+    get_abstract,
     list_documents,
+    read_lines,
+    search_doc,
 )
 
-
-def _get_doc_text(doc_id: str) -> str:
-    doc = _documents_collection.find_one(
-        {
-            "doc_id": doc_id
-        }
-    )
-    if doc is None:
-        raise KeyError(f"文档不存在：{doc_id}")
-    return doc["text"]
 
 @tool
 def list_papers() -> list[dict]:
@@ -25,14 +15,14 @@ def list_papers() -> list[dict]:
     """
     return list_documents()
 
+
 @tool
 def read_paper(doc_id: str, start_line: int = 1, end_line: int = 50) -> str:
     """读取指定论文从 start_line 到 end_line 的原始文本（行号从 1 开始，含两端）。
     默认返回前 50 行。搜索或摘要给出某个行号后，用本工具读取该位置附近的完整上下文。
     """
-    text = _get_doc_text(doc_id)
-    lines = text.split("\n")
-    return "\n".join(lines[start_line - 1 : end_line])
+    return read_lines(doc_id, start_line, end_line)
+
 
 @tool
 def search_papers(pattern: str, doc_id: str) -> list[dict]:
@@ -43,31 +33,12 @@ def search_papers(pattern: str, doc_id: str) -> list[dict]:
     """
     if not doc_id:
         raise ValueError("doc_id 不能为空。请先调用 list_papers 获取可用的 doc_id。")
-    regex = re.compile(pattern)
-    doc = _documents_collection.find_one({"doc_id": doc_id})
-    if doc is None:
-        raise KeyError(f"文档不存在: {doc_id}")
-    hits = []
-    for i, line in enumerate(doc["text"].split("\n"), 1):
-        if regex.search(line):
-            hits.append({"doc_id": doc_id, "line_number": i, "line": line})
-    return hits
+    return search_doc(doc_id, pattern)
+
 
 @tool
 def extract_abstract(doc_id: str) -> str:
     """提取论文的 Abstract 段落，用于快速判断论文是否与问题相关。
     找不到独立 Abstract 段落时返回提示信息。
     """
-    text = _get_doc_text(doc_id)
-    lines = text.split("\n")
-    for i, line in enumerate(lines):
-        if line.strip().lower() == "abstract":
-            for j in range(i + 1, len(lines)):
-                para = lines[j].strip()
-                if para:
-                    end = j + 1
-                    while end < len(lines) and lines[end].strip():
-                        end += 1
-                    return "\n".join(lines[j:end])
-            return "Abstract 标题下方无内容"
-    return "未找到独立 Abstract 段落"
+    return get_abstract(doc_id)
