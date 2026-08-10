@@ -11,7 +11,7 @@ from agentic_search.services.documents import (
 @tool
 def list_papers() -> list[dict]:
     """列出语料库中所有可用论文。返回 [{doc_id, filename}]，不含正文。
-    先用本工具了解语料库里有哪些论文，再用 read_paper 或 search_papers 深入某一篇。
+    先用本工具了解语料库里有哪些论文，再用 read_paper 或 search_paper 深入某一篇。
     """
     return list_docs()
 
@@ -25,7 +25,7 @@ def read_paper(doc_id: str, start_line: int = 1, end_line: int = 50) -> str:
 
 
 @tool
-def search_papers(pattern: str, doc_id: str) -> list[dict]:
+def search_paper(pattern: str, doc_id: str) -> list[dict]:
     """用正则表达式搜索指定论文内容，返回每个命中行 [{doc_id, line_number, line}]。
     pattern 是 Python 正则（如 'transformer|attention'），不是自然语言问题。
     doc_id 必填——先用 list_papers 查看可用论文，拿到 doc_id 后再调本工具。

@@ -17,7 +17,7 @@
 
 **LangGraph** 是一个用有向图构建 Agent 工作流的框架。核心概念有四：StateGraph（有向图容器）、Node（处理步骤，本质是一个函数）、Edge（步骤间的连接），以及 **条件边**（`add_conditional_edges`）——根据状态动态选择下一个节点。数据（State）从起点 `START` 出发，经节点逐步处理，到达终点 `END`；每个节点接收当前状态、返回要更新的字段，LangGraph 自动合并。本模块的关键认知：**没有条件边、没有循环的线性图，只是 agent 图的退化特例**；真正的 agent 靠条件边实现「LLM 决策 → 执行工具 → 回到 LLM 再决策」的循环。
 
-**ReAct agent**（Reasoning + Acting）是 LLM + 工具的循环：LLM 先「思考」该做什么，再「行动」调用一个工具，拿到结果后继续思考，直到认为信息足够、直接给出答案。它对标 omp/hermes 用 `read`/`grep`/`glob` 自主探索本地代码库——本项目的 agent 把这套能力换到了论文上，用 `list_papers`/`read_paper`/`search_papers`/`extract_abstract` 自主探索论文语料库。路径完全由 LLM 在运行时决定：简单问题两步收工，跨论文对比可能走八九步。
+**ReAct agent**（Reasoning + Acting）是 LLM + 工具的循环：LLM 先「思考」该做什么，再「行动」调用一个工具，拿到结果后继续思考，直到认为信息足够、直接给出答案。它对标 omp/hermes 用 `read`/`grep`/`glob` 自主探索本地代码库——本项目的 agent 把这套能力换到了论文上，用 `list_papers`/`read_paper`/`search_paper`/`extract_abstract` 自主探索论文语料库。路径完全由 LLM 在运行时决定：简单问题两步收工，跨论文对比可能走八九步。
 
 **工具调用协议（tool calling）** 是 ReAct 循环的运转机制。开启工具调用后，LLM 不再只返回文本，而是在响应里返回结构化的 `tool_calls`（函数名 + 参数 JSON）；LangGraph 的 `ToolNode` 解析这些调用、执行对应工具，把结果包装成 `ToolMessage` 回灌给 LLM；LLM 看到工具结果后再次决策——调下一个工具，还是直接回答。`bind_tools`/`ToolNode`/条件边封装了这整套胶水。
 
@@ -29,7 +29,7 @@
 > {"choices": [{"index": 0, "finish_reason": "tool_calls",
 >   "message": {"role": "assistant", "content": null,
 >     "tool_calls": [{"id": "call_1", "type": "function",
->       "function": {"name": "search_papers",
+>       "function": {"name": "search_paper",
 >         "arguments": "{\"pattern\": \"dataset|corpus\", \"doc_id\": \"paper_001\"}"}}]}}]}
 > ```
 >
@@ -104,7 +104,7 @@ graph LR
 ## 前置条件
 
 - 已完成 [模块 1：Python 文档工具](./01-Python文档工具.md)——`services/documents.py` 中的 `parse_pdf`（返回完整纯文本）、`store_doc`、`list_docs` 已实现且测试通过
-- `agents/tools.py` 中四个 `@tool` 工具（`list_papers`/`read_paper`/`search_papers`/`extract_abstract`）已实现
+- `agents/tools.py` 中四个 `@tool` 工具（`list_papers`/`read_paper`/`search_paper`/`extract_abstract`）已实现
 - 后端已执行第 1 步的 `uv add`，`langgraph` / `langchain` / `langchain-openai` 等依赖安装完毕
 - 有可用的 DeepSeek API Key，写入 `backend/.env` 文件
 
@@ -112,12 +112,12 @@ graph LR
 
 ## 核心设计
 
-本模块的 Agent 不写死「先读全文再回答」，而是一个 **ReAct 循环**：LLM 拿到问题后，自主决定调用哪个论文导航工具、调用几次、何时认为证据足够、直接作答。它对标 omp/hermes 探索本地代码库的能力——`list_papers` 相当于 `glob`（看有哪些论文），`read_paper` 相当于 `read :50-100`（按行号取片段），`search_papers` 相当于 `grep`（正则定位行号），`extract_abstract` 相当于 `summarizeCode()`（读取时的概览便利），对象从代码换成了论文。
+本模块的 Agent 不写死「先读全文再回答」，而是一个 **ReAct 循环**：LLM 拿到问题后，自主决定调用哪个论文导航工具、调用几次、何时认为证据足够、直接作答。它对标 omp/hermes 探索本地代码库的能力——`list_papers` 相当于 `glob`（看有哪些论文），`read_paper` 相当于 `read :50-100`（按行号取片段），`search_paper` 相当于 `grep`（正则定位行号），`extract_abstract` 相当于 `summarizeCode()`（读取时的概览便利），对象从代码换成了论文。
 
 三个逼出 agentic 行为的设计约束：
 
-1. **没有「读整篇论文」的工具**。agent 必须先 `search_papers` 定位行号、再 `read_paper` 按行号取片段——这是「按需取片段」的强约束，既逼出真正的多轮探索，也是多论文场景下不撑爆上下文窗口的根本保障。
-2. `**search_papers` 用正则、不用 embedding**。对齐 omp `grep`：参数是正则 `pattern`（不是语义 query），返回命中行+行号。智能来自 LLM 自主迭代构造正则。**不用向量库、不做 embedding。**
+1. **没有「读整篇论文」的工具**。agent 必须先 `search_paper` 定位行号、再 `read_paper` 按行号取片段——这是「按需取片段」的强约束，既逼出真正的多轮探索，也是多论文场景下不撑爆上下文窗口的根本保障。
+2. `**search_paper` 用正则、不用 embedding**。对齐 omp `grep`：参数是正则 `pattern`（不是语义 query），返回命中行+行号。智能来自 LLM 自主迭代构造正则。**不用向量库、不做 embedding。**
 3. `**extract_abstract` 是读取时工具，不是上传预处理**。对齐 omp 的 `summarizeCode()`：agent 按需调用，从完整文本里正则提取 abstract 段落。不在上传时预计算。
 
 ---
@@ -141,7 +141,7 @@ backend/src/agentic_search/
 │   └── schemas.py       # 本模块新建：Pydantic 请求/响应模型
 ├── agents/
 │   ├── __init__.py
-│   ├── tools.py         # 模块 1 已实现：list_papers / read_paper / search_papers / extract_abstract（薄委托，逻辑在 documents.py）
+│   ├── tools.py         # 模块 1 已实现：list_papers / read_paper / search_paper / extract_abstract（薄委托，逻辑在 documents.py）
 │   └── graph.py         # 本模块创建：ReAct agent 图
 ├── memory/
 │   ├── __init__.py
@@ -389,13 +389,13 @@ from langchain.chat_models import init_chat_model
 from langgraph.prebuilt import ToolNode
 from langgraph.graph import StateGraph, START, END
 from agentic_search.configs.config import settings
-from agentic_search.agents.tools import list_papers, read_paper, search_papers, extract_abstract
+from agentic_search.agents.tools import list_papers, read_paper, search_paper, extract_abstract
 
 
 def build_graph():
     """组装 ReAct agent 图：llm_call ⇄ tool_node 循环，条件边控制终止。"""
     # ① 工具集（模块 1 定义）
-    tools = [list_papers, read_paper, search_papers, extract_abstract]
+    tools = [list_papers, read_paper, search_paper, extract_abstract]
 
     # ② LLM：init_chat_model 接 DeepSeek（OpenAI 兼容接口），bind_tools 开启工具调用
     #    model / model_provider / base_url / api_key / timeout 全部从 config.py 读取，不硬编码
@@ -554,7 +554,7 @@ async def query(req: QueryRequest):
 
 上面的代码用 SSE 格式推送数据。SSE 协议与流式输出的概念已在开头的[技术概念](#技术概念)段介绍——这里只看这个端点具体怎么用。
 
-> 本项目用两类事件，都经 `ServerSentEvent` 的 `data=` 字段产出，框架统一做 JSON 序列化（字符串加引号、非 ASCII 转义为 `\uXXXX`、dict 编码成 JSON 对象）。这保证了多行文字、特殊字符安全传输——SSE 帧不会被换行撕裂。文字 token 是默认事件（`data: "\u4f60\u597d"`）；工具调用是命名事件（`event: tool`），`data` 是结构化对象 `{"name": "search_papers"}`——把工具名放在对象字段里，对齐 Vercel AI SDK、OpenAI streaming、LangChain 把工具调用作为结构化 JSON 对象传输的惯例（`ServerSentEvent` 的另一个字段 `raw_data=` 专用于 `[DONE]` 哨兵等预格式化值，这类无语义的控制信号才走原始字符串；本端点的文字与工具名都是有语义的 JSON 值，统一走 `data=`）。
+> 本项目用两类事件，都经 `ServerSentEvent` 的 `data=` 字段产出，框架统一做 JSON 序列化（字符串加引号、非 ASCII 转义为 `\uXXXX`、dict 编码成 JSON 对象）。这保证了多行文字、特殊字符安全传输——SSE 帧不会被换行撕裂。文字 token 是默认事件（`data: "\u4f60\u597d"`）；工具调用是命名事件（`event: tool`），`data` 是结构化对象 `{"name": "search_paper"}`——把工具名放在对象字段里，对齐 Vercel AI SDK、OpenAI streaming、LangChain 把工具调用作为结构化 JSON 对象传输的惯例（`ServerSentEvent` 的另一个字段 `raw_data=` 专用于 `[DONE]` 哨兵等预格式化值，这类无语义的控制信号才走原始字符串；本端点的文字与工具名都是有语义的 JSON 值，统一走 `data=`）。
 >
 > 前端的处理规则因此很统一：对任意 `data:` 行一律 `JSON.parse`——文字事件得到字符串、工具事件得到对象、按 `event:` 是否为 `tool` 分支。流结束时后端关闭连接，前端 `reader.read()` 收到 `done: true` 即知结束——不需要单独的结束事件。
 
@@ -782,7 +782,7 @@ with httpx.stream("POST", "http://localhost:8000/api/query", json={"question": "
 '
 
 # ④ 跨论文提问——SSE 流里会连续出现多条 event: tool（每条紧跟 data: {"name":"..."}），
-#    揭示 agent 自主调 list_papers → search_papers → read_paper 的多轮路径；换问题改 json 重发即可
+#    揭示 agent 自主调 list_papers → search_paper → read_paper 的多轮路径；换问题改 json 重发即可
 uv run python -c '
 import httpx
 with httpx.stream("POST", "http://localhost:8000/api/query", json={"question": "对比语料库里两篇论文分别是什么研究方向？"}, timeout=60) as r:
@@ -931,7 +931,7 @@ def test_graph_returns_answer():
     assert final.content   # 非空回答
 ```
 
-**观察 agent 的探索轨迹**：把 `result["messages"]` 逐条打印（或在服务端终端看日志），能看到 agent 的多轮决策——比如先 `list_papers` 看有哪些论文、再 `search_papers("dataset|corpus", doc_id="paper_001")` 定位、最后 `read_paper` 取证。故意问一个**跨论文**问题（如「对比语料库里两篇论文的数据集差异」），观察 agent 在多篇论文间反复跳转的探索路径——这正是 agentic search 区别于「读一篇全文」的核心。
+**观察 agent 的探索轨迹**：把 `result["messages"]` 逐条打印（或在服务端终端看日志），能看到 agent 的多轮决策——比如先 `list_papers` 看有哪些论文、再 `search_paper("dataset|corpus", doc_id="paper_001")` 定位、最后 `read_paper` 取证。故意问一个**跨论文**问题（如「对比语料库里两篇论文的数据集差异」），观察 agent 在多篇论文间反复跳转的探索路径——这正是 agentic search 区别于「读一篇全文」的核心。
 
 ### 13.2 测试 API 接口
 

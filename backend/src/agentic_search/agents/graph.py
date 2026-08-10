@@ -9,7 +9,7 @@ from agentic_search.agents.tools import (
     extract_abstract,
     list_papers,
     read_paper,
-    search_papers,
+    search_paper,
 )
 from agentic_search.configs.config import settings
 
@@ -35,7 +35,7 @@ def build_graph():
     tools = [
         list_papers,
         read_paper,
-        search_papers,
+        search_paper,
         extract_abstract
     ]
 

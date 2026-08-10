@@ -34,7 +34,7 @@ def test_query_sse_wire_format():
     @stub.post("/query", response_class=EventSourceResponse)
     async def q():
         yield ServerSentEvent(data="你好")
-        yield ServerSentEvent(event="tool", data={"name": "search_papers"})
+        yield ServerSentEvent(event="tool", data={"name": "search_paper"})
 
     resp = _TC(stub).post("/query")
     assert resp.status_code == 200
@@ -43,6 +43,6 @@ def test_query_sse_wire_format():
     # 文字 token：JSON 编码、中文 ASCII 转义
     assert 'data: "\\u4f60\\u597d"' in body
     # 工具调用：结构化 JSON 对象（不是裸字符串）
-    assert 'event: tool\ndata: {"name": "search_papers"}' in body
+    assert 'event: tool\ndata: {"name": "search_paper"}' in body
     # 不应是旧的裸字符串格式
-    assert "data: search_papers" not in body
+    assert "data: search_paper" not in body
