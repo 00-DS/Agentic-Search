@@ -59,7 +59,7 @@ from dotenv import load_dotenv; load_dotenv()
 
 ### 2.4 无害性
 
-`TRACING=true`（默认）但 API Key 为空时，langsmith SDK 检测到缺失 key 静默跳过（不报错、不追踪）。`load_dotenv()` 本身只注入已存在的 .env 变量到 os.environ（不覆盖已有的系统环境变量，默认 `override=False`）。**未填 API Key 的学生，服务行为完全不变。**
+`TRACING=true`（默认）但 API Key 为空时，langsmith SDK 检测到缺失 key 静默跳过（不报错、不追踪）。**实测验证**（2026-08-10）：`LANGSMITH_TRACING=true` + 空 `LANGSMITH_API_KEY` 下，完整 import 链 `from agentic_search.agents.graph import build_graph`（含 langgraph → langsmith client 初始化）stdout + stderr 全部干净，零 warning 零 error。`load_dotenv()` 本身只注入已存在的 .env 变量到 os.environ（不覆盖已有的系统环境变量，默认 `override=False`）。**未填 API Key 的学生，服务行为完全不变。**
 
 ## 3. 设计
 
