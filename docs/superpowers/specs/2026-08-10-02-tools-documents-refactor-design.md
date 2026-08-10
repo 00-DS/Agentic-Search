@@ -23,31 +23,31 @@ documents.py（service 层）= 所有 MongoDB 访问 + 所有文档操作
 tools.py（agent 层）= 薄 @tool 封装，零 MongoDB 访问
 ```
 
-### 2.2 documents.py 新增 3 个函数
+### 2.2 documents.py 新增 4 个函数
 
 | 新函数 | 来源 | 逻辑 |
 |---|---|---|
-| `get_doc(doc_id: str) -> str` | `tools._get_doc_text` | `_documents_collection.find_one({"doc_id": ...})` → 返回 `doc["text"]`，找不到抛 `KeyError` |
-| `search_doc(doc_id: str, pattern: str) -> list[dict]` | `tools.search_papers` 主体 | 内部调 `get_doc(doc_id)` → `re.compile(pattern)` 逐行匹配 → 返回 `[{doc_id, line_number, line}]` |
-| `get_abstract(doc_id: str) -> str` | `tools.extract_abstract` 主体 | 内部调 `get_doc(doc_id)` → 找 `"abstract"` 标题行 → 提取下方段落 |
+| `_get_doc(doc_id: str) -> str` | `tools._get_doc_text` | `_documents_collection.find_one({"doc_id": ...})` → 返回 `doc["text"]`，找不到抛 `KeyError`。**私有**（下划线开头），只在 documents.py 内部使用 |
+| `read_lines(doc_id: str, start_line: int = 1, end_line: int = 50) -> str` | `tools.read_paper` 的切片逻辑 | 内部调 `_get_doc(doc_id)` → `text.split("\n")` → 返回 `lines[start_line-1 : end_line]` |
+| `search_doc(doc_id: str, pattern: str) -> list[dict]` | `tools.search_papers` 主体 | 内部调 `_get_doc(doc_id)` → `re.compile(pattern)` 逐行匹配 → 返回 `[{doc_id, line_number, line}]` |
+| `get_abstract(doc_id: str) -> str` | `tools.extract_abstract` 主体 | 内部调 `_get_doc(doc_id)` → 找 `"abstract"` 标题行 → 提取下方段落 |
 
-`search_doc` 和 `get_abstract` 内部调 `get_doc` 拿文本——`get_doc` 是 service 层的公共基础函数，read_paper 工具也调它。
+`_get_doc` 是私有 helper，`read_lines`/`search_doc`/`get_abstract` 都调它拿文本。tools.py 只访问这 3 个公开函数，不碰 `_get_doc` 和 `_documents_collection`。
 
 documents.py 需新增 `import re`（正则搜索需要）。
 
 ### 2.3 tools.py 瘦身后
 
 ```python
-import re  # ← 删除（正则移到 documents.py）
-
 from langchain.tools import tool
 
 from agentic_search.services.documents import (
     list_documents,
-    get_doc,        # ← 新（替代 _documents_collection + _get_doc_text）
-    search_doc,     # ← 新（替代 search_papers 的主体）
-    get_abstract,   # ← 新（替代 extract_abstract 的主体）
+    read_lines,      # ← 新（替代 read_paper 的切片）
+    search_doc,      # ← 新（替代 search_papers 的主体）
+    get_abstract,    # ← 新（替代 extract_abstract 的主体）
 )
+# import re ← 删除（正则移到 documents.py）
 # _documents_collection ← 彻底删除
 
 
@@ -60,9 +60,7 @@ def list_papers() -> list[dict]:
 @tool
 def read_paper(doc_id: str, start_line: int = 1, end_line: int = 50) -> str:
     """...（docstring 不变）"""
-    text = get_doc(doc_id)                              # ← 改调 get_doc
-    lines = text.split("\n")
-    return "\n".join(lines[start_line - 1 : end_line])  # 切片留工具层
+    return read_lines(doc_id, start_line, end_line)    # ← 纯委托
 
 
 @tool
@@ -79,12 +77,11 @@ def extract_abstract(doc_id: str) -> str:
     return get_abstract(doc_id)                         # ← 纯委托
 ```
 
-### 2.4 行号切片为什么留 tools.py
+### 2.4 切片为什么移到 documents.py
 
-`read_paper` 的 `lines[start_line - 1 : end_line]` 是「给 LLM 看多少行」的工具层展示逻辑——同一个 `get_doc` 返回完整文本，不同的工具可以用不同的切片方式。这不是文档数据的操作，是 agent 的阅读策略。
+切片本质是「从文档里取一段」——是文档操作，属于 service 层。更重要的原因是一致性：`read_paper` 调 `read_lines`，`search_papers` 调 `search_doc`，`extract_abstract` 调 `get_abstract`——4 个工具全部一致的委托模式。如果 `read_paper` 单独内联切片逻辑，就显得不合群。
 
 ### 2.5 输入校验为什么留 tools.py
-
 `search_papers` 的 `if not doc_id: raise ValueError("...请先调用 list_papers...")` 是 agent 面向的输入校验——错误消息引导 LLM 的行为（「先调 list_papers」），不是数据层校验。
 
 ## 3. 不变的东西
@@ -98,13 +95,13 @@ def extract_abstract(doc_id: str) -> str:
 
 ### 4.1 doc 01（主要影响——step 3 和 step 4）
 
-**step 3（services/documents.py）**：新增 3.4 节教 `get_doc`/`search_doc`/`get_abstract`（三个文档操作函数），与 3.1-3.3 的 CRUD 函数一起构成完整的 service 层。3.3 的「Agent 怎么读单篇论文？」提示框需要更新（不再说「模块 2 实现」，而是指向同模块 3.4）。
+**step 3（services/documents.py）**：新增 3.4 节教 `_get_doc`/`read_lines`/`search_doc`/`get_abstract`（私有 helper + 3 个文档操作函数），与 3.1-3.3 的 CRUD 函数一起构成完整的 service 层。3.3 的「Agent 怎么读单篇论文？」提示框需要更新（不再说「模块 2 实现」，而是指向同模块 3.4）。
 
 **step 4（agents/tools.py）**：重写为「薄封装」教学——每个 `@tool` 展示委托模式（调 service 层函数），不再内联 MongoDB 查询。这是教学重点：`@tool` 装饰器把 service 函数包装成 LLM 可调用的工具，函数体只是委托。
 
 ### 4.2 doc 02
 
-- L93 架构图 `services/documents.py<br/>list_documents / find_one` → `services/documents.py<br/>list_documents / get_doc / search_doc / get_abstract`
+- L93 架构图 `services/documents.py<br/>list_documents / find_one` → `services/documents.py<br/>list_documents / read_lines / search_doc / get_abstract`
 - L144 目录树 `tools.py # 模块 1 已实现：list_papers / read_paper / search_papers / extract_abstract` → 加注释说明 tools.py 是薄封装层
 
 ### 4.3 其他文档
@@ -117,7 +114,7 @@ def extract_abstract(doc_id: str) -> str:
 
 1. **import smoke test**：`from agentic_search.agents.tools import list_papers, read_paper, search_papers, extract_abstract` 无报错。
 2. **零 `_documents_collection` 访问**：`grep "_documents_collection" tools.py` 返回空。
-3. **零 `_get_doc_text` 残留**：`grep "_get_doc_text" tools.py` 返回空。
+3. **零 `_get_doc_text` 残留 + 零 `_get_doc` 访问**：`grep "_get_doc" tools.py` 返回空（_get_doc 私有，tools.py 不碰）。
 4. **现有测试通过**：`uv run pytest tests/test_documents.py -v` 仍全绿（4 个测试不变）。
 5. **行号连续 + 无否定措辞**（doc 01/02 文档检查）。
 
@@ -128,7 +125,7 @@ step 3：services/documents.py —— service 层（所有文档操作 + MongoDB
   3.1 parse_pdf（PDF → 纯文本）
   3.2 store_document（写入 MongoDB）
   3.3 list_documents（列出文档）
-  3.4 get_doc / search_doc / get_abstract（读取、搜索、摘要）  ← 新增
+  3.4 read_lines / search_doc / get_abstract（读取片段、搜索、摘要）+ _get_doc 私有 helper  ← 新增
 
 step 4：agents/tools.py —— agent 层（薄 @tool 封装）
   每个 @tool = docstring（LLM 看的）+ 委托 service 函数（实际逻辑）
