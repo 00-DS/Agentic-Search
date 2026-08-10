@@ -43,12 +43,3 @@ def list_documents() -> list[dict]:
         }
         for doc in cursor
     ]
-
-def read_document(doc_id: str) -> dict:
-    doc = _documents_collection.find_one(
-        {"doc_id": doc_id},
-        {"_id": 0}
-    )
-    if doc is None:
-        raise KeyError(f"文档不存在：{doc_id}")
-    return doc

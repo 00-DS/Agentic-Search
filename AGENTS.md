@@ -89,7 +89,7 @@ with httpx.stream("POST", "http://localhost:8000/api/query", json={"question":"�
 | `backend/src/agentic_search/api/routes.py` | 4 端点：`POST /api/query`(SSE) · `POST /api/ingest` · `GET /api/documents` · `POST /api/consolidate`(占位返回 `pending`) |
 | `backend/src/agentic_search/agents/graph.py` | `build_graph()` 构建 ReAct 图 |
 | `backend/src/agentic_search/agents/tools.py` | 4 个 `@tool`：`list_papers`·`read_paper(doc_id,start_line=1,end_line=50)`·`search_papers(pattern,doc_id)`·`extract_abstract(doc_id)` |
-| `backend/src/agentic_search/services/documents.py` | `parse_pdf`·`store_document`·`list_documents`·`read_document` |
+| `backend/src/agentic_search/services/documents.py` | `parse_pdf`·`store_document`·`list_documents` |
 | `backend/src/agentic_search/configs/config.py` | `Settings` 单例（7 字段） |
 | `backend/.env` / `.env.example` | 环境变量（⚠️ 见下注意） |
 | `任务文档/0X-*.md` | 各模块教学文档（设计源头） |
@@ -106,7 +106,7 @@ with httpx.stream("POST", "http://localhost:8000/api/query", json={"question":"�
 
 1. **`.env.example` 与 `config.py` 不一致**（待修）：`.env.example` 用 `MONGO_URI`，但 Settings 字段是 **`mongo_url`**（env `MONGO_URL`）——pydantic-settings 按名匹配，`MONGO_URI` **不会**填充该字段（只是默认值恰好也是 localhost:27017 才侥幸能用）。`.env.example` 还有 `INTENT_TIMEOUT`/`ANSWER_TIMEOUT` 两个不存在的字段（已废弃），且缺 `LLM_TIMEOUT`。**字段权威来源是 `config.py`，不是 `.env.example`。**
 2. **FastAPI 0.141.1 惰性路由**：`include_router` 不再把端点展开进 `app.routes`（只塞一个 `_IncludedRouter` 包装）。`app.routes` 看不到你的 `/api/*`，但端点运行时正常。**验证路由用 `TestClient` 打实请求，别内省 `app.routes`。**
-3. **`agents/tools.py` 有死 import**：`read_document` 从 services 导入但未用（`_get_doc_text` 内联重复了查询逻辑）。
+3. **`.env` 不在 git 跟踪**：已从索引移除（`git rm --cached`），`.gitignore` 已加 `backend/.env`。本地文件保留含 `LLM_API_KEY`，但新 clone 不会有。
 4. **`memory/` 是空包**：模块 4 未实现，图当前无持久记忆/checkpointer（只有 LangGraph 临时 `MessagesState`）。
 5. **`/api/consolidate` 是占位**：返回 `status="pending"`，模块 4 才补真整合逻辑（届时改为 `status="ok"`）。
 

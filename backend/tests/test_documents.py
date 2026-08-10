@@ -1,4 +1,4 @@
-from agentic_search.services.documents import parse_pdf, store_document, list_documents, read_document
+from agentic_search.services.documents import parse_pdf, store_document, list_documents
 import pytest
 
 def test_parse_pdf_return_string():
@@ -14,14 +14,6 @@ def test_parse_pdf_empty_bytes_raises():
     with pytest.raises(pymupdf.EmptyFileError):
         parse_pdf(b"")
 
-def test_store_and_read_document():
-    """存入后应能按 doc_id 读回完整文本。"""
-    doc_id = "test-doc-001"
-    store_document(doc_id, "测试论文.pdf", "正文内容")
-    doc = read_document(doc_id)
-    assert isinstance(doc["text"], str)
-    assert "正文内容" in doc["text"]
-
 
 def test_list_documents_returns_list():
     """list_documents 应返回列表。"""
@@ -35,9 +27,3 @@ def test_list_documents_result_format():
     if result:  # 有记录时才校验字段
         assert "doc_id" in result[0]
         assert "filename" in result[0]
-
-
-def test_read_document_not_found():
-    """读取不存在的 doc_id 应抛出 KeyError。"""
-    with pytest.raises(KeyError):
-        read_document("不存在的doc_id")

@@ -90,7 +90,7 @@ graph LR
     LLM -->|"返回 tool_calls"| Tool["tool_node<br/>执行工具（read_paper 等）"]
     Tool -->|"ToolMessage 回灌"| LLM
     LLM -->|"无 tool_calls（读够了）"| End["__end__"]
-    Tool -.->|"调用"| Docs["services/documents.py<br/>list_documents / read_document"]
+    Tool -.->|"调用"| Docs["services/documents.py<br/>list_documents / find_one"]
     subgraph ReAct 循环
         LLM
         Tool
@@ -103,7 +103,7 @@ graph LR
 
 ## 前置条件
 
-- 已完成 [模块 1：Python 文档工具](./01-Python文档工具.md)——`services/documents.py` 中的 `parse_pdf`（返回完整纯文本）、`store_document`、`list_documents`、`read_document` 已实现且测试通过
+- 已完成 [模块 1：Python 文档工具](./01-Python文档工具.md)——`services/documents.py` 中的 `parse_pdf`（返回完整纯文本）、`store_document`、`list_documents` 已实现且测试通过
 - `agents/tools.py` 中四个 `@tool` 工具（`list_papers`/`read_paper`/`search_papers`/`extract_abstract`）已实现
 - 后端已执行第 1 步的 `uv add`，`langgraph` / `langchain` / `langchain-openai` 等依赖安装完毕
 - 有可用的 DeepSeek API Key，写入 `backend/.env` 文件
@@ -148,7 +148,7 @@ backend/src/agentic_search/
 │   └── store.py         # 模块 4 实现：L1/L2 记忆
 └── services/
     ├── __init__.py
-    └── documents.py     # 模块 1 已实现：parse_pdf / list_documents / read_document
+    └── documents.py     # 模块 1 已实现：parse_pdf / list_documents
 ```
 
 **设计说明——为什么要"包化"？**
@@ -660,7 +660,7 @@ async def ingest(file: UploadFile):
 
 - **零文件系统依赖**：PDF 字节流直接交给 `parse_pdf`（内部 `pymupdf.open(stream=...)`），全程不碰磁盘。没有 `data/raw/` 目录，没有临时文件，所有持久化数据集中在 MongoDB。
 - **职责分离**：`parse_pdf` 只做「PDF → 纯文本」提取（纯函数，便于单元测试）；`store_document` 只做「写入 MongoDB documents 集合」。两者解耦后，换存储后端只需改 `store_document`，`parse_pdf` 不动。
-- **doc_id 由文件名派生**：`Path(file.filename).stem` 取主文件名作为文档唯一标识，与模块 1 的 `read_document(doc_id)`、`list_documents()` 保持一致。
+- **doc_id 由文件名派生**：`Path(file.filename).stem` 取主文件名作为文档唯一标识，与模块 1 的 `list_documents()` 保持一致。
 
 ### 8.3 GET /api/documents（列出文档）
 
@@ -999,10 +999,6 @@ uv run pytest tests/ -v
 ### Q：浏览器调用接口报 CORS 错误
 
 确认 `main.py` 中已添加 `CORSMiddleware`，且 `allow_origins` 包含前端所在源。教学示例中用 `"*"` 放开全部源。
-
-### Q：`from agentic_search.services.documents import read_document` 报 ImportError
-
-确认模块 1 已完成——`services/documents.py` 中 `read_document` 函数已实现且包已安装。
 
 ---
 
