@@ -805,7 +805,7 @@ with httpx.stream("POST", "http://localhost:8000/api/query", json={"question": "
 
 ## 第 11 步：用 FastAPI 自带文档界面直观感受你的 API
 
-启动服务后，你已经用第 10 步的 `httpx` 命令验证了每个端点能跑。FastAPI 还提供更直观的方式——两个自动生成的 API 文档界面，零额外代码。这一步先用它们**手动感受一遍**，下一步（第 12 步）再把验证固化成 pytest 自动化测试。
+启动服务后，你已经用第 10 步的 `httpx` 命令验证了每个端点能跑。FastAPI 还提供更直观的方式——两个自动生成的 API 文档界面，零额外代码。这一步先用它们**手动感受 API 的外观**，下一步（第 12 步）再用 LangSmith 看 agent 内部实际怎么跑。
 
 ### 11.1 两个文档界面：/redoc 与 /docs
 
@@ -837,13 +837,78 @@ FastAPI 从你的**类型标注 + Pydantic 模型**自动生成一份 OpenAPI �
 
 注意面板里每个端点的请求/响应结构——`QueryRequest` 的 `question` 字段、`IngestResponse` 的 `doc_id`/`filename`——这些全来自第 7 步 `schemas.py` 里定义的 Pydantic 模型。这就是「认真定义模型」的第二个回报：除了第 7 步讲过的自动校验（缺字段返回 422），还自动变成了这个**人能读的交互文档**。改模型，面板同步更新——你定义一次，校验与文档两处受益。
 
-现在你已经亲手试过每个端点、确认它们正常工作。下一步（第 12 步）把这些手动验证**固化成 pytest 自动化测试**——把「每次改代码手动点一遍」升级成「每次改代码自动跑一遍」。
+现在你已经用 API 文档界面直观感受了 4 个端点的外部行为。但 agent 内部的 ReAct 循环——LLM 决策、工具调用、多轮探索——在终端只看到 `[retry]` 和 SSE 输出，不够直观。下一步（第 12 步）用 LangSmith 可视化 agent 的完整执行轨迹。
 
 ---
 
-## 第 12 步：编写测试（pytest）
+## 第 12 步：用 LangSmith 可视化 ReAct 循环的执行
 
-### 12.1 测试图逻辑
+第 5 步教了 ReAct 循环的代码结构——`llm_call → should_continue → tool_node → llm_call → ...` 循环直到 LLM 给出纯文本回答。但「代码长什么样」和「实际跑起来长什么样」是两回事。终端日志的 `[retry]` 和 SSE 输出只能间接推断 agent 的多轮决策路径，不够直观。
+
+LangSmith 是 LangChain 团队的追踪/可观测平台，与 LangGraph 天然集成——设好环境变量后，graph 每一步的执行自动上报，在 smith.langchain.com 上以嵌套瀑布图展示。这一步配置 LangSmith，把 ReAct 循环变成可见的执行轨迹。
+
+### 12.1 什么是 LangSmith —— 为什么用它看 ReAct 循环
+
+LangSmith 的价值：把第 5 步的 ReAct 循环代码变成可见的执行轨迹——每个 `llm_call` 节点里 LLM 决策了什么（调哪个工具、传什么参数）、每个 `tool_node` 里工具返回了什么、`should_continue` 何时走 `tool_node` 何时走 `END`，一目了然。每步的耗时、token 用量、输入输出全部完整可见。
+
+### 12.2 配置 LangSmith
+
+三步：
+
+1. **注册**：到 [smith.langchain.com](https://smith.langchain.com) 注册账号 → Settings → 获取 API Key。
+2. **`.env` 加配置**：在 `.env` 文件加三行（`.env.example` 已有模板）：
+
+   ```env
+   LANGSMITH_TRACING = true
+   LANGSMITH_API_KEY = 你的key
+   LANGSMITH_PROJECT = agentic-search
+   ```
+
+   `LANGSMITH_PROJECT` 是项目名（在 LangSmith 里分组用），随意取。
+
+3. **`main.py` 加桥接**：`main.py` 顶部已加了两行：
+
+   ```python
+   from dotenv import load_dotenv
+   load_dotenv()
+   ```
+
+   **为什么需要这个桥接**：项目的 `.env` 有两条消费路径。第一条是 pydantic-settings——`config.py` 的 `Settings` 类打开 `.env`，只提取匹配自己字段的变量（如 `LLM_API_KEY`），存入 `settings` 对象，全程不碰 `os.environ`。第二条是 LangSmith SDK——它直接读 `os.environ["LANGSMITH_TRACING"]` 等变量，没有「传参」的替代方式。`load_dotenv()` 读 `.env` 把所有变量注入 `os.environ`，补上这条断裂的桥。（`python-dotenv` 已作为 pydantic-settings 的依赖安装，无需额外添加。）
+
+   > 💡 默认 `LANGSMITH_TRACING = true` 但 API Key 为空时，LangSmith SDK 会检测到缺失 key 静默跳过——不报错、不追踪，服务照常运行。填入有效 API Key 后重启服务即开启追踪。
+
+### 12.3 跑一个查询，在 LangSmith 看 trace
+
+重启服务 → 用第 10 步的 httpx 命令跑一个跨论文问题（触发多轮工具调用，trace 更丰富）：
+
+```bash
+uv run python -c '
+import httpx
+with httpx.stream("POST", "http://localhost:8000/api/query", json={"question": "对比语料库里两篇论文分别是什么研究方向？"}, timeout=60) as r:
+    for line in r.iter_lines():
+        if line: print(line)
+'
+```
+
+打开 [smith.langchain.com](https://smith.langchain.com) → 左侧选 `agentic-search` 项目 → 点最新一条 trace，看到嵌套瀑布图。
+
+### 12.4 读 trace：ReAct 循环的可视化
+
+trace 的嵌套结构，每一层对应代码里的什么：
+
+- **顶层**：整个 graph 的运行（`build_graph().astream()` 的一次调用）。
+- **循环层**：`llm_call` 节点 → `should_continue`（有 `tool_calls` 继续循环）→ `tool_node` 节点 → 回 `llm_call` → ... 往复。
+- **`llm_call` 节点**：展开看输入 messages（对话历史）+ 输出（AIMessage，含 `tool_calls` 字段——LLM 决定调哪个工具、传什么参数）。
+- **`tool_node` 节点**：展开看工具执行结果（ToolMessage，工具返回的内容）。
+- **最后一轮 `llm_call`**：LLM 不再生成 `tool_calls`，给出纯文本回答 → `should_continue` 路由到 `END` → 循环结束。
+
+这就是第 5 步 `should_continue()` 条件边的可视化——有 `tool_calls` 走 `tool_node` 继续，没有走 `END` 结束。现在你已经亲眼看到 agent 内部实际怎么跑了。下一步（第 13 步）把验证固化成 pytest 自动化测试。
+
+---
+
+## 第 13 步：编写测试（pytest）
+
+### 13.1 测试图逻辑
 
 新建 `tests/test_graph.py`：
 
@@ -868,7 +933,7 @@ def test_graph_returns_answer():
 
 **观察 agent 的探索轨迹**：把 `result["messages"]` 逐条打印（或在服务端终端看日志），能看到 agent 的多轮决策——比如先 `list_papers` 看有哪些论文、再 `search_papers("dataset|corpus", doc_id="paper_001")` 定位、最后 `read_paper` 取证。故意问一个**跨论文**问题（如「对比语料库里两篇论文的数据集差异」），观察 agent 在多篇论文间反复跳转的探索路径——这正是 agentic search 区别于「读一篇全文」的核心。
 
-### 12.2 测试 API 接口
+### 13.2 测试 API 接口
 
 新建 `tests/test_api.py`，用 FastAPI 的 `TestClient`（无需真正启动服务器即可测试路由）：
 
@@ -916,6 +981,7 @@ uv run pytest tests/ -v
 - [ ] `uv run python -c '...'`（httpx.post files=）调用 `/api/ingest` 返回 `doc_id` 与 `filename`
 - [ ] `uv run python -c '...'`（httpx.stream）调用 `/api/query` 返回 SSE 流，文字 token 逐个到达（`data: "\uXXXX"` JSON 编码行），`event: tool` 行标记工具调用（`data: {"name": "..."}` 结构化对象）
 - [ ] 访问 `http://localhost:8000/docs` 和 `/redoc`，分别看到交互式 API 文档（能 Try it out）与只读文档视图
+- [ ] 配置 `LANGSMITH_TRACING=true` 并填入 API Key 后，在 smith.langchain.com 看到本次查询的完整 trace（`llm_call` 与 `tool_node` 节点交替出现，对应 ReAct 循环）
 - [ ] `uv run pytest tests/ -v` 全部绿色
 
 ---
