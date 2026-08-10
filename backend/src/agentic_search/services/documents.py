@@ -1,5 +1,5 @@
-from datetime import datetime, timezone
 import re
+from datetime import datetime, timezone
 
 import pymupdf
 from pymongo import MongoClient
@@ -16,7 +16,7 @@ _client = MongoClient(settings.mongo_url)
 _db = _client[settings.mongo_db]
 _documents_collection = _db["documents"]
 
-def store_document(doc_id: str,
+def store_doc(doc_id: str,
                    filename: str,
                    text: str) -> None:
     _documents_collection.insert_one(
@@ -28,7 +28,7 @@ def store_document(doc_id: str,
         }
     )
 
-def list_documents() -> list[dict]:
+def list_docs() -> list[dict]:
     cursor = _documents_collection.find(
         {},
         {
