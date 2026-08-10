@@ -506,7 +506,7 @@ def list_documents() -> list[dict]:
 
 - **`find({}, {投影})`**：第一个参数 `{}` 是查询条件（空字典表示「全部」）；第二个参数是**投影**——`{"doc_id": 1, "filename": 1}` 表示只返回这两个字段，`"_id": 0` 表示排除默认会返回的 `_id`。投影让列表接口只传输文件名而非整篇论文全文，大幅减少数据量。
 
-> **Agent 怎么读单篇论文？** agent 工具层的 `read_paper(doc_id, start_line, end_line)`、`search_papers(pattern, doc_id)`、`extract_abstract(doc_id)` 各自用 PyMongo 的 `find_one({"doc_id": ...})` 按 ID 精确查找并按需取片段——这些在[模块 2](./02-LangGraph-Agent.md) 的 `agents/tools.py` 中实现。services 层只需提供 `list_documents` 让 agent 先发现有哪些论文，具体读取由 agent 工具按行号自主完成。
+> **Agent 怎么读单篇论文？** 下面 §3.4 实现的 `read_lines`（读取行片段）、`search_doc`（正则搜索）、`get_abstract`（提取摘要）覆盖了 agent 读取论文的全部需求。模块 2 的 `agents/tools.py` 只是用 `@tool` 把它们包装成 LLM 可调用的工具——薄委托，零直接数据访问。
 
 **验证**（假设已通过 `store_document` 存入至少一篇文档）：
 
@@ -518,29 +518,95 @@ print('文档列表:', docs)
 "
 ```
 
----
+### 3.4 文档读取操作：`read_lines` / `search_doc` / `get_abstract`
 
-## 步骤 4：`agents/tools.py` — 论文导航工具集
+除了「存入」和「列出」，agent 还需要三种读取操作：按行号读片段、正则搜索关键词、提取摘要。这三个函数共享一个私有 helper `_get_doc`——按 `doc_id` 从 MongoDB 取出完整文本。
 
-Agent 的「手和眼」——四个工具，对标 omp 探索代码库的 `glob`/`read`/`grep`/`summarize`。用 LangChain 的 `@tool` 装饰器声明（装饰器原理见上方[技术概念](#装饰器decorator与-langchain-tool)）：`@tool` 从函数的类型注解和 docstring 自动生成工具 schema，函数体一行没改，就变成了 LLM 可调用的工具。
-
-新建 `agents/tools.py`：
+**`_get_doc`（私有 helper）**：
 
 ```python
-# agents/tools.py —— 教学示例：四个论文导航工具
-import re
-from langchain.tools import tool
-from agentic_search.services.documents import (
-    list_documents, _documents_collection,
-)
-
-
-def _get_doc_text(doc_id: str) -> str:
+def _get_doc(doc_id: str) -> str:
     """按 doc_id 取出整篇文档的完整文本。找不到抛 KeyError。"""
     doc = _documents_collection.find_one({"doc_id": doc_id})
     if doc is None:
         raise KeyError(f"文档不存在: {doc_id}")
     return doc["text"]
+```
+
+`_get_doc` 以下划线开头——Python 的惯例，表示「模块内部使用，外部不应直接调用」。三个公开函数内部调它，tools.py 不碰它。
+
+**`read_lines(doc_id, start_line, end_line)`** —— 按行号读取指定范围的文本（行号从 1 开始）：
+
+```python
+def read_lines(doc_id: str, start_line: int = 1, end_line: int = 50) -> str:
+    """读取指定文档从 start_line 到 end_line 的原始文本（行号从 1 开始，含两端）。"""
+    text = _get_doc(doc_id)
+    lines = text.split("\n")
+    return "\n".join(lines[start_line - 1 : end_line])
+```
+
+行号是 1-indexed（人读论文的习惯），列表是 0-indexed（Python 的习惯），所以 `lines[start_line - 1 : end_line]` 减 1 对齐。
+
+**`search_doc(doc_id, pattern)`** —— 用正则表达式搜索文档内容，返回命中行及行号：
+
+```python
+import re
+
+def search_doc(doc_id: str, pattern: str) -> list[dict]:
+    """用正则表达式搜索指定文档内容，返回每个命中行 [{doc_id, line_number, line}]。"""
+    if not doc_id:
+        raise ValueError("doc_id 不能为空。")
+    regex = re.compile(pattern)
+    text = _get_doc(doc_id)
+    hits = []
+    for i, line in enumerate(text.split("\n"), 1):
+        if regex.search(line):
+            hits.append({"doc_id": doc_id, "line_number": i, "line": line})
+    return hits
+```
+
+`pattern` 是 Python 正则（如 `'transformer|attention'`）。`enumerate(..., 1)` 让行号从 1 开始——agent 拿到行号后可以直接传给 `read_lines` 读上下文。
+
+**`get_abstract(doc_id)`** —— 提取论文的 Abstract 段落：
+
+```python
+def get_abstract(doc_id: str) -> str:
+    """提取文档的 Abstract 段落。找不到独立 Abstract 段落时返回提示信息。"""
+    text = _get_doc(doc_id)
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        if line.strip().lower() == "abstract":
+            for j in range(i + 1, len(lines)):
+                para = lines[j].strip()
+                if para:
+                    end = j + 1
+                    while end < len(lines) and lines[end].strip():
+                        end += 1
+                    return "\n".join(lines[j:end])
+            return "Abstract 标题下方无内容"
+    return "未找到独立 Abstract 段落"
+```
+
+`line.strip().lower() == "abstract"` 只匹配独立成行的标题（正文里出现的 "abstract" 单词不算），对齐论文 PDF 的常见排版。
+
+---
+
+## 步骤 4：`agents/tools.py` — 论文导航工具集
+
+Agent 的「手和眼」——四个工具，对标 omp 探索代码库的 `glob`/`read`/`grep`/`summarize`。用 LangChain 的 `@tool` 装饰器声明（装饰器原理见上方[技术概念](#装饰器decorator与-langchain-tool)）：`@tool` 从函数的类型注解和 docstring 自动生成工具 schema，函数体一行没改，就变成了 LLM 可调用的工具。注意每个工具的函数体——它们只做委托：`list_papers` 调 `list_documents()`，`read_paper` 调 `read_lines()`，`search_papers` 调 `search_doc()`（外加输入校验），`extract_abstract` 调 `get_abstract()`。这是有意的分层设计：`services/documents.py` 拥有所有 MongoDB 访问和文档操作逻辑，`agents/tools.py` 只是用 `@tool` 装饰器把这些函数包装成 LLM 可调用的工具。`@tool` 从函数的类型注解和 docstring 自动生成工具 schema——函数体的逻辑在 service 层，装饰器只管「让 LLM 看到这个工具」。
+
+新建 `agents/tools.py`：
+
+```python
+# agents/tools.py —— 教学示例：四个论文导航工具（薄委托）
+from langchain.tools import tool
+
+from agentic_search.services.documents import (
+    get_abstract,
+    list_documents,
+    read_lines,
+    search_doc,
+)
 
 
 @tool
@@ -556,10 +622,7 @@ def read_paper(doc_id: str, start_line: int = 1, end_line: int = 50) -> str:
     """读取指定论文从 start_line 到 end_line 的原始文本（行号从 1 开始，含两端）。
     默认返回前 50 行。搜索或摘要给出某个行号后，用本工具读取该位置附近的完整上下文。
     """
-    text = _get_doc_text(doc_id)
-    lines = text.split("\n")
-    # 行号是 1-indexed，列表是 0-indexed
-    return "\n".join(lines[start_line - 1 : end_line])
+    return read_lines(doc_id, start_line, end_line)
 
 
 @tool
@@ -571,15 +634,7 @@ def search_papers(pattern: str, doc_id: str) -> list[dict]:
     """
     if not doc_id:
         raise ValueError("doc_id 不能为空。请先调用 list_papers 获取可用的 doc_id。")
-    regex = re.compile(pattern)
-    doc = _documents_collection.find_one({"doc_id": doc_id})
-    if doc is None:
-        raise KeyError(f"文档不存在: {doc_id}")
-    hits = []
-    for i, line in enumerate(doc["text"].split("\n"), 1):
-        if regex.search(line):
-            hits.append({"doc_id": doc_id, "line_number": i, "line": line})
-    return hits
+    return search_doc(doc_id, pattern)
 
 
 @tool
@@ -587,20 +642,7 @@ def extract_abstract(doc_id: str) -> str:
     """提取论文的 Abstract 段落，用于快速判断论文是否与问题相关。
     找不到独立 Abstract 段落时返回提示信息。
     """
-    text = _get_doc_text(doc_id)
-    lines = text.split("\n")
-    for i, line in enumerate(lines):
-        if line.strip().lower() == "abstract":          # "abstract" 独立成段才算数
-            # 收集其下方第一个非空自然段
-            for j in range(i + 1, len(lines)):
-                para = lines[j].strip()
-                if para:                                  # 找到非空行，收集到空行为止
-                    end = j + 1
-                    while end < len(lines) and lines[end].strip():
-                        end += 1
-                    return "\n".join(lines[j:end])
-            return "Abstract 标题下方无内容"
-    return "未找到独立 Abstract 段落"
+    return get_abstract(doc_id)
 ```
 
 四工具与 omp 的对应关系：

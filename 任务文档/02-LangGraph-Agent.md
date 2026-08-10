@@ -90,7 +90,7 @@ graph LR
     LLM -->|"返回 tool_calls"| Tool["tool_node<br/>执行工具（read_paper 等）"]
     Tool -->|"ToolMessage 回灌"| LLM
     LLM -->|"无 tool_calls（读够了）"| End["__end__"]
-    Tool -.->|"调用"| Docs["services/documents.py<br/>list_documents / find_one"]
+    Tool -.->|"调用"| Docs["services/documents.py<br/>list_documents / read_lines / search_doc / get_abstract"]
     subgraph ReAct 循环
         LLM
         Tool
@@ -141,7 +141,7 @@ backend/src/agentic_search/
 │   └── schemas.py       # 本模块新建：Pydantic 请求/响应模型
 ├── agents/
 │   ├── __init__.py
-│   ├── tools.py         # 模块 1 已实现：list_papers / read_paper / search_papers / extract_abstract
+│   ├── tools.py         # 模块 1 已实现：list_papers / read_paper / search_papers / extract_abstract（薄委托，逻辑在 documents.py）
 │   └── graph.py         # 本模块创建：ReAct agent 图
 ├── memory/
 │   ├── __init__.py
