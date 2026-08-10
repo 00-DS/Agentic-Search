@@ -5,8 +5,8 @@ from langchain.tools import tool
 from agentic_search.services.documents import (
     _documents_collection,
     list_documents,
-    read_document,
 )
+
 
 def _get_doc_text(doc_id: str) -> str:
     doc = _documents_collection.find_one(
