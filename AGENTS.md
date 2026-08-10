@@ -34,7 +34,7 @@ backend/           uv 项目（src layout），全部后端代码
     configs/       config.py(pydantic-settings 单例)
     memory/        空占位包（模块4 TMT 记忆系统，未实现）
   tests/           3 个测试文件（见下）
-docs/superpowers/  specs/ + plans/ —— 5 份设计重构记录（pymupdf迁移/ReAct重设计/去预处理/SSE/bytes流）
+docs/superpowers/  specs/ + plans/ —— 7 份设计重构记录（pymupdf迁移/ReAct重设计/去预处理/SSE实时流/SSE改ServerSentEvent/bytes流/SwaggerUI步骤）
 .superpowers/sdd/  subagent-driven development 产物
 frontend/          不存在（模块 3 目标产物 index.html + app.js）
 ```
@@ -75,7 +75,7 @@ with httpx.stream("POST", "http://localhost:8000/api/query", json={"question":"�
 - **配置单例**：`configs/config.py` 的 `settings = Settings()` 模块级单例，pydantic-settings v2，无 env 前缀（字段 `foo` ↔ env `FOO`）。所有 LLM/Mongo 参数只从这里读。
 - **数据契约**：全局用 `doc_id` / `filename`（不是 `id` / `name` / `title`）。
 - **Mongo 在 import 时初始化**：`services/documents.py` 模块级 `MongoClient(settings.mongo_url)`，集合 `agentic_search.documents`。文档结构 `{doc_id, filename, text, uploaded_at}`。
-- **SSE 流式契约**（`api/routes.py` query 端点）：文字片段 `data: {json.dumps(chunk.content)}\n\n`（是 JSON 字符串，消费端要 `JSON.parse` 去引号）；工具调用 `event: tool\ndata: {工具名}\n\n`；事件间空行分隔。
+- **SSE 流式契约**（`api/routes.py` query 端点）：用 `fastapi.sse` 的 `EventSourceResponse` + `ServerSentEvent`（`response_class=EventSourceResponse`，路由本身是异步生成器，`yield ServerSentEvent(...)`）。文字片段 `ServerSentEvent(data=chunk.content)` → wire `data: "\u4f60\u597d"`（`data=` 总做 JSON 序列化，中文 ASCII 转义）；工具调用 `ServerSentEvent(event="tool", data={"name": 工具名})` → wire `event: tool\ndata: {"name": "search_papers"}`（结构化 JSON 对象，对齐 Vercel/OpenAI/LangChain 惯例，**不是**裸字符串）。`except Exception` 是流错误边界（`# noqa: BLE001` 有意宽 catch，防连接静默死）。消费端对任意 `data:` 行 `JSON.parse`（文字得字符串、工具得对象取 `.name`）。
 - **PDF 解析**：`parse_pdf(pdf_bytes: bytes) -> str`，`pymupdf.open(stream=, filetype="pdf")`。`str(page.get_text("text"))` 的外层 `str()` 是 Pylance 绕过（pymupdf 无类型 stub，返回是多态联合类型）——不是多余，别删。
 - **FastAPI 端点**：`UploadFile` 裸写（不用 `File(...)`，FastAPI 自动检测）；`if not file.filename: raise HTTPException(422)` 防御让 Pylance 把下游 `str|None` 收窄成 `str`。
 - **异步**：路由是 `async def`，agent 流用 `graph.astream`（async generator）。测试**全同步**（无 pytest-asyncio）。
@@ -113,7 +113,7 @@ with httpx.stream("POST", "http://localhost:8000/api/query", json={"question":"�
 ## 测试与 QA
 
 - **框架**：pytest（`>=9.1.1`，与 ruff 一起在主依赖里，无 dev 组）。
-- **位置**：`backend/tests/`（注意是 `tests/` 不是 `test/`），3 个文件 9 个测试，全同步。
+- **位置**：`backend/tests/`（注意是 `tests/` 不是 `test/`），3 个文件 10 个测试，全同步。
 - **隔离性差**（改测试要知道）：`test_api.py` 用 `TestClient` 但连**真 MongoDB**；`test_graph.py` 打**真 LLM**（需 `LLM_API_KEY`）；`test_documents.py` 连真 Mongo + 读一个**硬编码绝对路径**的本地 PDF（`D:\...\任务文档\TiMem...pdf`）。**这些测试不能在干净 CI 跑通**，依赖外部服务与本机文件。
 - **无 fixtures、无 conftest.py、无 mock。**
 - **无 pytest 配置**（无 `[tool.pytest.ini_options]`），默认自动发现。
