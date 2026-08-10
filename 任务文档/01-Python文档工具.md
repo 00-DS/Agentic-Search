@@ -11,7 +11,7 @@
 1. 理解 **Python 包化布局（src layout）**，说明 `backend/src/agentic_search/` 这种结构与单文件 `.py` 的区别，以及工业项目采用它的原因
 2. 使用 **uv** 创建包化项目，通过 `pyproject.toml` 声明包名与依赖，并用 `uv sync` / `pip install -e .` 完成可编辑安装
 3. 使用 **pydantic-settings** 编写配置层 `configs/config.py`，从 `.env` 读取 LLM 模型名、MongoDB 连接配置、超时，避免在代码中硬编码
-4. 使用 **pymupdf + PyMongo** 在 `services/documents.py` 中实现 `parse_pdf`（PDF 转纯文本）、`store_document`、`list_documents` 三个文档工具函数，把完整文本存入 MongoDB
+4. 使用 **pymupdf + PyMongo** 在 `services/documents.py` 中实现 `parse_pdf`（PDF 转纯文本）、`store_doc`、`list_docs` 三个文档工具函数，把完整文本存入 MongoDB
 5. 使用 **pytest** 为文档工具编写并运行单元测试
 6. 使用 **LangChain `@tool` 装饰器** 在 `agents/tools.py` 中实现四个论文导航工具（`list_papers`/`read_paper`/`search_papers`/`extract_abstract`），理解装饰器如何从类型注解 + docstring 自动生成工具 schema
 
@@ -365,13 +365,13 @@ uv run python -c "from agentic_search.configs.config import settings; print(sett
 | 函数 | 职责 |
 |------|------|
 | `parse_pdf(pdf_path)` | 用 pymupdf 把 PDF 转为完整纯文本 |
-| `store_document(doc_id, filename, text)` | 把完整文本写入 MongoDB `documents` 集合 |
-| `list_documents()` | 从 MongoDB 查询所有文档，返回 doc_id 与文件名 |
+| `store_doc(doc_id, filename, text)` | 把完整文本写入 MongoDB `documents` 集合 |
+| `list_docs()` | 从 MongoDB 查询所有文档，返回 doc_id 与文件名 |
 
 它们都位于 `agentic_search.services.documents`，调用方式统一为包化 import：
 
 ```python
-from agentic_search.services.documents import parse_pdf, store_document, list_documents
+from agentic_search.services.documents import parse_pdf, store_doc, list_docs
 ```
 
 注意：包化布局让 import 路径只依赖包名，与文件在磁盘上的相对位置无关——这是「可测试、可分发」的关键。
@@ -442,9 +442,9 @@ print(f'前 200 字符: {text[:200]}')
 
 **验证**：输出文本长度（非零）和前 200 字符（含 PDF 原文内容），而非报错。
 
-### 3.2 `store_document(doc_id, filename, text)`
+### 3.2 `store_doc(doc_id, filename, text)`
 
-`parse_pdf` 只负责把 PDF 转为纯文本；持久化由 `store_document` 完成。它把完整文本连同文档标识、文件名、上传时间写入 MongoDB 的 `documents` 集合。集合中每条记录的固定结构为 `{_id, doc_id, filename, text, uploaded_at}`，其中 `text` 是完整纯文本。
+`parse_pdf` 只负责把 PDF 转为纯文本；持久化由 `store_doc` 完成。它把完整文本连同文档标识、文件名、上传时间写入 MongoDB 的 `documents` 集合。集合中每条记录的固定结构为 `{_id, doc_id, filename, text, uploaded_at}`，其中 `text` 是完整纯文本。
 
 > 在 MongoDB 术语中，一个 database（本项目为 `agentic_search`）下有若干 collection（集合，本项目为 `documents` 与 `memories`），每个集合里存放若干 document（文档，即一条记录）。注意区分「集合 collection」与「文档 document」：前者是表，后者是行。
 
@@ -463,7 +463,7 @@ _db = _client[settings.mongo_db]
 _documents_collection = _db["documents"]
 
 
-def store_document(doc_id: str, filename: str, text: str) -> None:
+def store_doc(doc_id: str, filename: str, text: str) -> None:
     """把一篇论文的完整纯文本存入 documents 集合。"""
     _documents_collection.insert_one(
         {
@@ -482,18 +482,18 @@ def store_document(doc_id: str, filename: str, text: str) -> None:
 - **`uploaded_at`**：记录上传时间。`datetime.now(timezone.utc)` 用带时区的 UTC 时间，避免不同服务器时区不一致导致的排序错误。
 - **schema：`{doc_id, filename, text, uploaded_at}`**：扁平文档，`text` 是完整纯文本。agent 经 `read_paper(doc_id, start_line, end_line)` 按行号取片段，或经 `search_papers(pattern, doc_id)` 正则定位。
 
-**验证**：先用 `parse_pdf` 提取一个 PDF 的文本，再调用 `store_document` 存入，然后打开 **MongoDB Compass** 查看 `agentic_search` 的 `documents` 集合——应能看到一条新记录，其 `text` 字段是完整纯文本。
+**验证**：先用 `parse_pdf` 提取一个 PDF 的文本，再调用 `store_doc` 存入，然后打开 **MongoDB Compass** 查看 `agentic_search` 的 `documents` 集合——应能看到一条新记录，其 `text` 字段是完整纯文本。
 
-### 3.3 `list_documents()`
+### 3.3 `list_docs()`
 
 这个函数负责从 MongoDB 列出所有文档，供 Agent 自主决定「语料库里有哪些论文」。
 
-- `list_documents() -> list[dict]`：查询 `documents` 集合中的全部记录，只取 `doc_id` 与 `filename` 两个字段（不取 `text` 正文），返回 `[{doc_id, filename}, ...]`。
+- `list_docs() -> list[dict]`：查询 `documents` 集合中的全部记录，只取 `doc_id` 与 `filename` 两个字段（不取 `text` 正文），返回 `[{doc_id, filename}, ...]`。
 
 以下是**教学示例，展示核心逻辑，非完整实现**：
 
 ```python
-def list_documents() -> list[dict]:
+def list_docs() -> list[dict]:
     """列出所有文档的 doc_id 与文件名。"""
     cursor = _documents_collection.find({}, {"doc_id": 1, "filename": 1, "_id": 0})
     return [
@@ -508,12 +508,12 @@ def list_documents() -> list[dict]:
 
 > **Agent 怎么读单篇论文？** 下面 §3.4 实现的 `read_lines`（读取行片段）、`search_doc`（正则搜索）、`get_abstract`（提取摘要）覆盖了 agent 读取论文的全部需求。模块 2 的 `agents/tools.py` 只是用 `@tool` 把它们包装成 LLM 可调用的工具——薄委托，零直接数据访问。
 
-**验证**（假设已通过 `store_document` 存入至少一篇文档）：
+**验证**（假设已通过 `store_doc` 存入至少一篇文档）：
 
 ```bash
 uv run python -c "
-from agentic_search.services.documents import list_documents
-docs = list_documents()
+from agentic_search.services.documents import list_docs
+docs = list_docs()
 print('文档列表:', docs)
 "
 ```
@@ -593,7 +593,7 @@ def get_abstract(doc_id: str) -> str:
 
 ## 步骤 4：`agents/tools.py` — 论文导航工具集
 
-Agent 的「手和眼」——四个工具，对标 omp 探索代码库的 `glob`/`read`/`grep`/`summarize`。用 LangChain 的 `@tool` 装饰器声明（装饰器原理见上方[技术概念](#装饰器decorator与-langchain-tool)）：`@tool` 从函数的类型注解和 docstring 自动生成工具 schema，函数体一行没改，就变成了 LLM 可调用的工具。注意每个工具的函数体——它们只做委托：`list_papers` 调 `list_documents()`，`read_paper` 调 `read_lines()`，`search_papers` 调 `search_doc()`（外加输入校验），`extract_abstract` 调 `get_abstract()`。这是有意的分层设计：`services/documents.py` 拥有所有 MongoDB 访问和文档操作逻辑，`agents/tools.py` 只是用 `@tool` 装饰器把这些函数包装成 LLM 可调用的工具。`@tool` 从函数的类型注解和 docstring 自动生成工具 schema——函数体的逻辑在 service 层，装饰器只管「让 LLM 看到这个工具」。
+Agent 的「手和眼」——四个工具，对标 omp 探索代码库的 `glob`/`read`/`grep`/`summarize`。用 LangChain 的 `@tool` 装饰器声明（装饰器原理见上方[技术概念](#装饰器decorator与-langchain-tool)）：`@tool` 从函数的类型注解和 docstring 自动生成工具 schema，函数体一行没改，就变成了 LLM 可调用的工具。注意每个工具的函数体——它们只做委托：`list_papers` 调 `list_docs()`，`read_paper` 调 `read_lines()`，`search_papers` 调 `search_doc()`（外加输入校验），`extract_abstract` 调 `get_abstract()`。这是有意的分层设计：`services/documents.py` 拥有所有 MongoDB 访问和文档操作逻辑，`agents/tools.py` 只是用 `@tool` 装饰器把这些函数包装成 LLM 可调用的工具。`@tool` 从函数的类型注解和 docstring 自动生成工具 schema——函数体的逻辑在 service 层，装饰器只管「让 LLM 看到这个工具」。
 
 新建 `agents/tools.py`：
 
@@ -603,7 +603,7 @@ from langchain.tools import tool
 
 from agentic_search.services.documents import (
     get_abstract,
-    list_documents,
+    list_docs,
     read_lines,
     search_doc,
 )
@@ -614,7 +614,7 @@ def list_papers() -> list[dict]:
     """列出语料库中所有可用论文。返回 [{doc_id, filename}]，不含正文。
     先用本工具了解语料库里有哪些论文，再用 read_paper 或 search_papers 深入某一篇。
     """
-    return list_documents()
+    return list_docs()
 
 
 @tool
@@ -726,32 +726,32 @@ def test_parse_pdf_file_not_found():
 
 > 你需要准备一个测试用 PDF（放在 `backend/` 目录下，命名为 `test_sample.pdf`）。可创建一个简单文本文档导出为 PDF，或使用任何已有论文 PDF。`parse_pdf` 不依赖 MongoDB，故可独立测试。
 
-#### 5.2 测试 `store_document`、`list_documents`
+#### 5.2 测试 `store_doc`、`list_docs`
 
-这些函数操作 MongoDB，测试前需确保 MongoDB 服务已启动（见[开始之前](./00-开始指南.md)）。测试思路：先用 `store_document` 写入一条记录，再用 `list_documents` 验证它出现在列表中。以下是**教学示例**：
+这些函数操作 MongoDB，测试前需确保 MongoDB 服务已启动（见[开始之前](./00-开始指南.md)）。测试思路：先用 `store_doc` 写入一条记录，再用 `list_docs` 验证它出现在列表中。以下是**教学示例**：
 
 ```python
-from agentic_search.services.documents import store_document, list_documents
+from agentic_search.services.documents import store_doc, list_docs
 
 
-def test_store_document():
+def test_store_doc():
     """存入后应能在文档列表中看到。"""
     doc_id = "test-doc-001"
-    store_document(doc_id, "测试论文.pdf", "正文内容")
-    docs = list_documents()
+    store_doc(doc_id, "测试论文.pdf", "正文内容")
+    docs = list_docs()
     doc_ids = [d["doc_id"] for d in docs]
     assert doc_id in doc_ids
 
 
-def test_list_documents_returns_list():
-    """list_documents 应返回列表。"""
-    result = list_documents()
+def test_list_docs_returns_list():
+    """list_docs 应返回列表。"""
+    result = list_docs()
     assert isinstance(result, list)
 
 
-def test_list_documents_result_format():
+def test_list_docs_result_format():
     """每个结果应包含 doc_id 与 filename 字段。"""
-    result = list_documents()
+    result = list_docs()
     if result:  # 有记录时才校验字段
         assert "doc_id" in result[0]
         assert "filename" in result[0]
@@ -759,8 +759,8 @@ def test_list_documents_result_format():
 
 讲解要点：
 
-- `test_store_document` 用硬编码字符串 `"正文内容"` 而非 `parse_pdf` 的真实输出，目的是**隔离被测逻辑**：这个测试只验证「写入 → 列表能看到」这条链路，不引入 `parse_pdf` 的不确定性。`parse_pdf` 有自己的独立测试（5.1 节）；各函数各测各的，互不耦合。
-- `list_documents` 用投影只取 `doc_id` 与 `filename`，故断言这两个字段存在即可（`text` 正文不会出现在列表结果中）。
+- `test_store_doc` 用硬编码字符串 `"正文内容"` 而非 `parse_pdf` 的真实输出，目的是**隔离被测逻辑**：这个测试只验证「写入 → 列表能看到」这条链路，不引入 `parse_pdf` 的不确定性。`parse_pdf` 有自己的独立测试（5.1 节）；各函数各测各的，互不耦合。
+- `list_docs` 用投影只取 `doc_id` 与 `filename`，故断言这两个字段存在即可（`text` 正文不会出现在列表结果中）。
 - MongoDB 测试会在数据库中留下测试记录。教学阶段可用 MongoDB Compass 手动清理，或为每个测试生成随机 `doc_id` 避免相互干扰。
 
 
@@ -782,7 +782,7 @@ uv run pytest tests/test_documents.py -v
 
 ```bash
 uv run python -c "
-from agentic_search.services.documents import parse_pdf, store_document, list_documents
+from agentic_search.services.documents import parse_pdf, store_doc, list_docs
 
 # 1. 将一个 PDF 转为纯文本
 text = parse_pdf('你的文件.pdf')
@@ -790,13 +790,13 @@ print(f'提取完成，文本长度: {len(text)}')
 
 # 2. 存入 MongoDB documents 集合
 doc_id = 'demo-paper'
-store_document(doc_id, '你的文件.pdf', text)
+store_doc(doc_id, '你的文件.pdf', text)
 print('已存入 MongoDB documents 集合')
 
 # 3. 列出所有文档
 print()
 print('=== 文档列表 ===')
-docs = list_documents()
+docs = list_docs()
 for d in docs:
     print(f'  {d}')
 "
@@ -812,7 +812,7 @@ for d in docs:
 
 - [ ] `backend/pyproject.toml` 存在，包名为 `agentic-search`，包含 `pymupdf`、`pydantic-settings`、`pymongo`、`langchain`、`pytest`（dev）
 - [ ] `backend/src/agentic_search/configs/config.py` 存在，`settings` 含 `mongo_url`、`mongo_db`，可从 `.env` 读取配置
-- [ ] `backend/src/agentic_search/services/documents.py` 包含 `parse_pdf`、`store_document`、`list_documents`
+- [ ] `backend/src/agentic_search/services/documents.py` 包含 `parse_pdf`、`store_doc`、`list_docs`
 - [ ] `backend/src/agentic_search/agents/tools.py` 包含四个 `@tool` 工具（`list_papers`/`read_paper`/`search_papers`/`extract_abstract`）
 - [ ] MongoDB 服务已启动（`localhost:27017`），MongoDB Compass 可连接查看 `agentic_search`
 - [ ] 可编辑安装成功：
@@ -834,9 +834,9 @@ uv run pytest tests/test_documents.py -v
 
 tests/test_documents.py::test_parse_pdf_returns_text PASSED
 tests/test_documents.py::test_parse_pdf_file_not_found PASSED
-tests/test_documents.py::test_store_document PASSED
-tests/test_documents.py::test_list_documents_returns_list PASSED
-tests/test_documents.py::test_list_documents_result_format PASSED
+tests/test_documents.py::test_store_doc PASSED
+tests/test_documents.py::test_list_docs_returns_list PASSED
+tests/test_documents.py::test_list_docs_result_format PASSED
 ======================== 5 passed in 1.2s ========================
 ```
 
@@ -844,7 +844,7 @@ tests/test_documents.py::test_list_documents_result_format PASSED
 
 ```bash
 cd backend
-uv run python -c "from agentic_search.services.documents import parse_pdf, store_document, list_documents; text = parse_pdf('你的文件.pdf'); store_document('verify', '你的文件.pdf', text); docs = [d['doc_id'] for d in list_documents()]; print('verify' in docs)"
+uv run python -c "from agentic_search.services.documents import parse_pdf, store_doc, list_docs; text = parse_pdf('你的文件.pdf'); store_doc('verify', '你的文件.pdf', text); docs = [d['doc_id'] for d in list_docs()]; print('verify' in docs)"
 ```
 
 ---

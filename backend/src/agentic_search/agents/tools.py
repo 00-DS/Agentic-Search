@@ -2,7 +2,7 @@ from langchain.tools import tool
 
 from agentic_search.services.documents import (
     get_abstract,
-    list_documents,
+    list_docs,
     read_lines,
     search_doc,
 )
@@ -13,7 +13,7 @@ def list_papers() -> list[dict]:
     """列出语料库中所有可用论文。返回 [{doc_id, filename}]，不含正文。
     先用本工具了解语料库里有哪些论文，再用 read_paper 或 search_papers 深入某一篇。
     """
-    return list_documents()
+    return list_docs()
 
 
 @tool

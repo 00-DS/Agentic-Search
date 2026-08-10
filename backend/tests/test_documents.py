@@ -1,4 +1,4 @@
-from agentic_search.services.documents import parse_pdf, store_document, list_documents
+from agentic_search.services.documents import parse_pdf, store_doc, list_docs
 import pytest
 
 def test_parse_pdf_return_string():
@@ -15,15 +15,15 @@ def test_parse_pdf_empty_bytes_raises():
         parse_pdf(b"")
 
 
-def test_list_documents_returns_list():
-    """list_documents 应返回列表。"""
-    result = list_documents()
+def test_list_docs_returns_list():
+    """list_docs 应返回列表。"""
+    result = list_docs()
     assert isinstance(result, list)
 
 
-def test_list_documents_result_format():
+def test_list_docs_result_format():
     """每个结果应包含 doc_id 与 filename 字段。"""
-    result = list_documents()
+    result = list_docs()
     if result:  # 有记录时才校验字段
         assert "doc_id" in result[0]
         assert "filename" in result[0]

@@ -90,7 +90,7 @@ graph LR
     LLM -->|"返回 tool_calls"| Tool["tool_node<br/>执行工具（read_paper 等）"]
     Tool -->|"ToolMessage 回灌"| LLM
     LLM -->|"无 tool_calls（读够了）"| End["__end__"]
-    Tool -.->|"调用"| Docs["services/documents.py<br/>list_documents / read_lines / search_doc / get_abstract"]
+    Tool -.->|"调用"| Docs["services/documents.py<br/>list_docs / read_lines / search_doc / get_abstract"]
     subgraph ReAct 循环
         LLM
         Tool
@@ -103,7 +103,7 @@ graph LR
 
 ## 前置条件
 
-- 已完成 [模块 1：Python 文档工具](./01-Python文档工具.md)——`services/documents.py` 中的 `parse_pdf`（返回完整纯文本）、`store_document`、`list_documents` 已实现且测试通过
+- 已完成 [模块 1：Python 文档工具](./01-Python文档工具.md)——`services/documents.py` 中的 `parse_pdf`（返回完整纯文本）、`store_doc`、`list_docs` 已实现且测试通过
 - `agents/tools.py` 中四个 `@tool` 工具（`list_papers`/`read_paper`/`search_papers`/`extract_abstract`）已实现
 - 后端已执行第 1 步的 `uv add`，`langgraph` / `langchain` / `langchain-openai` 等依赖安装完毕
 - 有可用的 DeepSeek API Key，写入 `backend/.env` 文件
@@ -148,7 +148,7 @@ backend/src/agentic_search/
 │   └── store.py         # 模块 4 实现：L1/L2 记忆
 └── services/
     ├── __init__.py
-    └── documents.py     # 模块 1 已实现：parse_pdf / list_documents
+    └── documents.py     # 模块 1 已实现：parse_pdf / list_docs
 ```
 
 **设计说明——为什么要"包化"？**
@@ -508,7 +508,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from langchain_core.messages import AIMessageChunk, HumanMessage
 
 from agentic_search.agents.graph import build_graph
-from agentic_search.services.documents import parse_pdf, list_documents, store_document
+from agentic_search.services.documents import parse_pdf, list_docs, store_doc
 from agentic_search.api.schemas import (
     QueryRequest, IngestResponse, DocumentResponse,
     ConsolidateRequest, ConsolidateResponse,
@@ -589,7 +589,7 @@ async def ingest(file: UploadFile = File(...)):
         os.unlink(tmp_path)                               # ④ 用完即删
 
     doc_id = Path(file.filename).stem
-    store_document(doc_id, file.filename, text)
+    store_doc(doc_id, file.filename, text)
     return IngestResponse(doc_id=doc_id, filename=file.filename)
 ```
 
@@ -650,7 +650,7 @@ async def ingest(file: UploadFile):
     pdf_bytes = await file.read()                         # ① 读字节
     text = parse_pdf(pdf_bytes)                           # ② 直接喂字节，无临时文件
     doc_id = Path(file.filename).stem                     # ③ 派生 doc_id
-    store_document(doc_id, file.filename, text)           # ④ 存 MongoDB
+    store_doc(doc_id, file.filename, text)           # ④ 存 MongoDB
     return IngestResponse(doc_id=doc_id, filename=file.filename)
 ```
 
@@ -659,8 +659,8 @@ async def ingest(file: UploadFile):
 **设计说明——为什么 PDF 不落盘，且转换与存储分两个函数？**
 
 - **零文件系统依赖**：PDF 字节流直接交给 `parse_pdf`（内部 `pymupdf.open(stream=...)`），全程不碰磁盘。没有 `data/raw/` 目录，没有临时文件，所有持久化数据集中在 MongoDB。
-- **职责分离**：`parse_pdf` 只做「PDF → 纯文本」提取（纯函数，便于单元测试）；`store_document` 只做「写入 MongoDB documents 集合」。两者解耦后，换存储后端只需改 `store_document`，`parse_pdf` 不动。
-- **doc_id 由文件名派生**：`Path(file.filename).stem` 取主文件名作为文档唯一标识，与模块 1 的 `list_documents()` 保持一致。
+- **职责分离**：`parse_pdf` 只做「PDF → 纯文本」提取（纯函数，便于单元测试）；`store_doc` 只做「写入 MongoDB documents 集合」。两者解耦后，换存储后端只需改 `store_doc`，`parse_pdf` 不动。
+- **doc_id 由文件名派生**：`Path(file.filename).stem` 取主文件名作为文档唯一标识，与模块 1 的 `list_docs()` 保持一致。
 
 ### 8.3 GET /api/documents（列出文档）
 
@@ -668,7 +668,7 @@ async def ingest(file: UploadFile):
 @router.get("/documents", response_model=list[DocumentResponse])
 async def documents():
     """列出已上传的文档。"""
-    return list_documents()
+    return list_docs()
 ```
 
 ### 8.4 POST /api/consolidate（触发 L2 记忆整合）

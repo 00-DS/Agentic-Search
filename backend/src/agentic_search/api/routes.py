@@ -12,7 +12,7 @@ from agentic_search.api.schemas import (
     IngestResponse,
     QueryRequest,
 )
-from agentic_search.services.documents import list_documents, parse_pdf, store_document
+from agentic_search.services.documents import list_docs, parse_pdf, store_doc
 
 router = APIRouter(prefix="/api")
 graph = build_graph()
@@ -44,14 +44,14 @@ async def ingest(file: UploadFile):
     pdf_bytes = await file.read()
     text = parse_pdf(pdf_bytes)
     doc_id = Path(file.filename).stem
-    store_document(doc_id, file.filename, text)
+    store_doc(doc_id, file.filename, text)
 
     return IngestResponse(doc_id=doc_id, filename=file.filename)
 
 @router.get("/documents", response_model=list[DocumentResponse])
 async def documents():
     """列出已上传的文档。"""
-    return list_documents()
+    return list_docs()
 
 @router.post("/consolidate", response_model=ConsolidateResponse)
 async def consolidate(req: ConsolidateRequest):
