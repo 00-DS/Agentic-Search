@@ -204,3 +204,150 @@ def extract_l1(dialogue: dict, session_id: str, recent_l1: list[Memory] = []) ->
 **验证：** 构造一轮测试对话（如「我是做 NLP 的研究生，最近在研究注意力机制」），调用 `extract_l1`，检查：
 1. 提取出用户身份（第 1 类）和研究方向（第 3 类）
 2. 传入含相同事实的 `recent_l1` 后，重复事实不再被提取（去重生效）
+
+### 2.3 L2 整合：`consolidate_l2(l1_memories)`
+
+将一次会话的所有 L1 整合为一条会话摘要。
+
+```python
+# 教学示例：展示核心流程，非完整实现
+def consolidate_l2(l1_memories: list[Memory]) -> Memory:
+    """将同会话的所有 L1 整合为一条 L2 会话摘要。
+
+    空列表守卫：会话尚无 L1 时直接报错，由调用方（端点）转为 422。
+    幂等由调用方（端点）保证：传入前先查是否已有 L2。
+    """
+    if not l1_memories:
+        raise ValueError("该会话没有 L1 记忆，先对话几轮再整合")
+    facts = "\n".join(f"- {m.content}" for m in l1_memories)
+    prompt = f"""你是记忆整合器。将以下原子事实整合为一段会话摘要。
+规则：合并重复、提取主题、保留关键细节，输出 100 字以内的摘要文字。
+事实列表：
+{facts}"""
+    summary = call_llm(prompt)           # 返回一段摘要文字
+    return Memory(
+        level="L2", content=summary,
+        timestamp=now_iso(),
+        session_id=l1_memories[0].session_id,  # 继承会话 ID
+    )
+```
+
+**逐段讲解：**
+- 把 L1 记忆的 `content` 用 `- ` 前缀拼成列表喂给 LLM，便于模型逐条审视。
+- 输出的 `Memory` 的 `session_id` 取自第一条 L1——L2 属于同一个会话。
+- 基础实现可不传 `recent_l2`（滑动窗口），后续优化时再加入历史 L2 作为额外上下文。
+- **空列表守卫**：`l1_memories[0]` 在空列表上会抛 IndexError——守卫把它变成语义明确的 ValueError，端点捕获后返回 422，前端提示“先对话几轮”。
+
+**验证：** 构造 3 条 L1 记忆，调用 `consolidate_l2`，检查输出是否是一段包含要点的连贯摘要。
+
+### 2.4 L5 画像整合：`consolidate_profile(l2_memories, previous_profile)`
+
+将跨会话的全部 L2 摘要整合为一条全局唯一的用户画像。与 `consolidate_l2` 同构——都是“下一级记忆 → 一条高层摘要”——区别在输入范围（跨会话）与幂等键（全局一条）。
+
+```python
+# 教学示例：展示核心流程，非完整实现
+def consolidate_profile(l2_memories: list[Memory], previous_profile: Memory | None = None) -> Memory:
+    """将全部 L2 会话摘要整合为一条 L5 用户画像。
+
+    previous_profile: 现有 L5（首次生成时为 None）。传入旧画像让 LLM 做“合并新信息、
+    修正过时信息”的增量更新——对应论文 Historical Memories 的思想：高层整合参考同层
+    历史保持连续性（TiMem 中 L5 参考最近 3 条历史 L5，`workflows/nodes/unified_processors.py:873`）。
+    """
+    if not l2_memories:
+        raise ValueError("还没有任何 L2 会话摘要，先整合至少一个会话")
+    summaries = "\n".join(f"- {m.content}" for m in l2_memories)
+    previous_block = previous_profile.content if previous_profile else "（首次生成，尚无画像）"
+    prompt = f"""你是画像整合器。基于会话摘要更新用户画像。
+画像维度：身份与背景、偏好与倾向、长期关注话题、关键决策、重要事实。
+规则：合并新信息、修正已过时的描述、保留仍然成立的内容，输出 150 字以内的画像文字。
+历史画像：
+{previous_block}
+
+会话摘要：
+{summaries}"""
+    profile = call_llm(prompt)
+    return Memory(level="L5", content=profile, timestamp=now_iso(), session_id=None)
+```
+
+**逐段讲解：**
+- **画像维度 5 类**：身份与背景、偏好与倾向、长期关注话题、关键决策、重要事实。这是对 L1 提取 6 类的“画像视角”收拢——L1 负责在源头带方向性地记，L5 负责按维度收拢成稳定画像。省略 L3/L4 后，两级 prompt 的维度指引共同承担了原本 L3/L4 的分类提炼职责。
+- **`previous_profile` 增量更新**：旧画像全文进 prompt，LLM 在其基础上合并修正，而非每次从零重写——画像稳定性（论文里“从观察到人格”的渐变）靠这一步保持。
+- **`session_id=None`**：画像属于用户全局，幂等键就是 `level="L5"`，全库至多一条。
+
+**验证：** 构造 2 条 L2 摘要（不同会话、话题相关），先传 `previous_profile=None` 生成画像 v1；再构造 1 条含新信息的 L2，传 v1 调用，检查输出画像包含新信息且保留 v1 中仍然成立的内容。
+
+### 2.5 MongoDB 存取（PyMongo CRUD）
+
+#### 2.5.1 连接初始化
+
+```python
+from pymongo import MongoClient
+from agentic_search.configs.config import settings
+
+client = MongoClient(settings.mongo_url)
+db = client[settings.mongo_db]
+memories_collection = db["memories"]
+```
+
+#### 2.5.2 写入单条：`save_memory(memory)`
+
+```python
+def save_memory(memory: Memory):
+    memories_collection.insert_one(asdict(memory))
+```
+
+#### 2.5.3 条件查询：`load_memories(session_id, level)`
+
+```python
+def load_memories(session_id: str | None = None, level: str | None = None) -> list[Memory]:
+    query = {}
+    if session_id is not None:
+        query["session_id"] = session_id
+    if level is not None:
+        query["level"] = level
+    docs = memories_collection.find(query)
+    memories = []
+    for doc in docs:
+        doc.pop("_id", None)
+        memories.append(Memory(**doc))
+    return memories
+```
+
+#### 2.5.4 更新单条：`update_one`（幂等更新）
+
+```python
+memories_collection.update_one(
+    {"session_id": session_id, "level": "L2"},
+    {"$set": {"content": new_summary, "timestamp": now_iso()}},
+    upsert=True,
+)
+```
+
+### 2.6 记忆注入：`get_memories_for_context(session_id)`
+
+方案 A 的落地：全局画像 + 本会话最近 N 条，两类一起返回。
+
+```python
+# 教学示例：展示核心逻辑，非完整实现
+def get_memories_for_context(session_id: str, limit: int = 20) -> list[Memory]:
+    """取全局画像 + 该会话最近 N 条记忆（L1+L2），按时间倒序，评分留待方案 B。
+
+    profile 在前（全局唯一一条）；本会话记忆按时间倒序取最近 limit 条。
+    跨会话记忆由 profile 承担：其他会话的 L1/L2 留在库中，作为下次整合画像的素材。
+    """
+    memories = load_memories(level="L5")          # 全局至多一条画像
+    docs = memories_collection.find(
+        {"session_id": session_id}
+    ).sort("timestamp", -1).limit(limit)
+    for doc in docs:
+        doc.pop("_id", None)
+        memories.append(Memory(**doc))
+    return memories
+```
+
+**逐段讲解：**
+- **`load_memories(level="L5")` 在最前**：画像是最稳定的背景知识，放列表头部，注入 prompt 时格式化为独立一段（见第 4 步）。
+- **`sort("timestamp", -1)` + `.limit(limit)`**：本会话记忆按时间倒序、最多 20 条——上下文保护线，用户偏好变化时 Agent 优先读到当前状态。
+- **其他会话的记忆自然被过滤**：查询条件是 `session_id` 等值匹配，跨会话的记忆只有画像这一条通道进入上下文。
+
+**验证：** 会话 A 存 3 条 L1，会话 B 存 2 条 L1，库里存 1 条 L5。调用 `get_memories_for_context("A")`：返回 4 条（L5 在前 + A 的 3 条），B 的记忆不在其中。
