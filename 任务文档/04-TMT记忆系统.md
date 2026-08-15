@@ -128,7 +128,7 @@ oh-my-pi（omp）：它的记忆子系统验证了同样的结构在生产级 ag
 ## 第 2 步：实现 `memory/store.py`
 
 在 `backend/src/agentic_search/memory/` 下创建 `store.py`，通过包化 import 暴露：
-`from agentic_search.memory.store import extract_l1, consolidate_l2, consolidate_profile, get_memories_for_context, save_memory, load_memories`。
+`from agentic_search.memory.store import extract_l1, consolidate_l2, consolidate_profile, get_memories_for_context, save_memory, load_memories, upsert_l2, upsert_profile`。
 
 ### 2.1 数据结构：Memory dataclass
 
@@ -234,7 +234,7 @@ def consolidate_l2(l1_memories: list[Memory]) -> Memory:
     """将同会话的所有 L1 整合为一条 L2 会话摘要。
 
     空列表守卫：会话尚无 L1 时直接报错，由调用方（端点）转为 422。
-    幂等由调用方（端点）保证：传入前先查是否已有 L2。
+    幂等由 store 层的 upsert_l2 保证（见 2.6）。
     """
     if not l1_memories:
         raise ValueError("该会话没有 L1 记忆，先对话几轮再整合")
@@ -303,16 +303,19 @@ def consolidate_profile(l2_memories: list[Memory], previous_profile: Memory | No
 from pymongo import MongoClient
 from agentic_search.configs.config import settings
 
-client = MongoClient(settings.mongo_url)
-db = client[settings.mongo_db]
-memories_collection = db["memories"]
+_client = MongoClient(settings.mongo_url)
+_db = _client[settings.mongo_db]
+_memories_collection = _db["memories"]   # 私有成员：仅 store.py 内部使用，端点/工具层零引用
 ```
+
+**逐段讲解：**
+- **下划线私有**：`_memories_collection` 与 `services/documents.py` 的 `_documents_collection` 同一规范——集合句柄是 service 层的实现细节，API 层与 agent 工具层只调 service 函数，从不直接碰集合。
 
 #### 2.5.2 写入单条：`save_memory(memory)`
 
 ```python
 def save_memory(memory: Memory):
-    memories_collection.insert_one(asdict(memory))
+    _memories_collection.insert_one(asdict(memory))
 ```
 
 #### 2.5.3 条件查询：`load_memories(session_id, level)`
@@ -324,7 +327,7 @@ def load_memories(session_id: str | None = None, level: str | None = None) -> li
         query["session_id"] = session_id
     if level is not None:
         query["level"] = level
-    docs = memories_collection.find(query)
+    docs = _memories_collection.find(query)
     memories = []
     for doc in docs:
         doc.pop("_id", None)
@@ -335,14 +338,53 @@ def load_memories(session_id: str | None = None, level: str | None = None) -> li
 #### 2.5.4 更新单条：`update_one`（幂等更新）
 
 ```python
-memories_collection.update_one(
+_memories_collection.update_one(
     {"session_id": session_id, "level": "L2"},
     {"$set": {"content": new_summary, "timestamp": now_iso()}},
     upsert=True,
 )
 ```
 
-### 2.6 记忆注入：`get_memories_for_context(session_id)`
+该示例展示 `update_one` 原子操作本身；实际项目中的幂等更新由 `upsert_l2`/`upsert_profile` 封装（见 2.6）。
+
+### 2.6 幂等写入：`upsert_l2(l2)` 与 `upsert_profile(profile)`
+
+端点需要的“有则更新、无则新建”逻辑封装在 service 层，返回落库文档的 `_id` 字符串：
+
+```python
+# 教学示例：展示核心流程，非完整实现
+def upsert_l2(l2: Memory) -> str:
+    """按 (session_id, level="L2") 幂等写入 L2：已有则更新 content/timestamp，返回 _id。"""
+    existing = _memories_collection.find_one(
+        {"session_id": l2.session_id, "level": "L2"}
+    )
+    if existing is None:
+        return str(_memories_collection.insert_one(asdict(l2)).inserted_id)
+    _memories_collection.update_one(
+        {"_id": existing["_id"]},
+        {"$set": {"content": l2.content, "timestamp": l2.timestamp}},
+    )
+    return str(existing["_id"])
+
+
+def upsert_profile(profile: Memory) -> str:
+    """按 level="L5" 全局幂等写入画像：已有则更新 content/timestamp，返回 _id。"""
+    existing = _memories_collection.find_one({"level": "L5"})
+    if existing is None:
+        return str(_memories_collection.insert_one(asdict(profile)).inserted_id)
+    _memories_collection.update_one(
+        {"_id": existing["_id"]},
+        {"$set": {"content": profile.content, "timestamp": profile.timestamp}},
+    )
+    return str(existing["_id"])
+```
+
+**逐段讲解：**
+- 与 `services/documents.py` 的分层一致：MongoDB 访问全部收在 service 层函数里，`api/routes.py` 只调用函数。
+- 两个函数只差幂等键（`session_id + level` vs 全局 `level`），对应 L2 每会话一条、L5 全局一条的定位。
+- §2 开头的 import 清单同步加 `upsert_l2, upsert_profile`。
+
+### 2.7 记忆注入：`get_memories_for_context(session_id)`
 
 分层注入的落地：全局画像 + 本会话最近 N 条，两类一起返回。
 
@@ -355,7 +397,7 @@ def get_memories_for_context(session_id: str, limit: int = 20) -> list[Memory]:
     跨会话记忆由 profile 承担：其他会话的 L1/L2 留在库中，作为下次整合画像的素材。
     """
     memories = load_memories(level="L5")          # 全局至多一条画像
-    docs = memories_collection.find(
+    docs = _memories_collection.find(
         {"session_id": session_id}
     ).sort("timestamp", -1).limit(limit)
     for doc in docs:
@@ -405,37 +447,21 @@ async def consolidate(req: ConsolidateRequest):
             raise HTTPException(422, "还没有会话摘要，先整合至少一个会话")
         previous = load_memories(level="L5")
         profile = consolidate_profile(l2_memories, previous[0] if previous else None)
-        existing = memories_collection.find_one({"level": "L5"})
-        if existing is None:
-            profile_id = str(memories_collection.insert_one(asdict(profile)).inserted_id)
-        else:
-            memories_collection.update_one(
-                {"_id": existing["_id"]},
-                {"$set": {"content": profile.content, "timestamp": profile.timestamp}},
-            )
-            profile_id = str(existing["_id"])
+        profile_id = upsert_profile(profile)
         return ConsolidateResponse(status="ok", profile_id=profile_id)
 
     l1_memories = load_memories(session_id=req.session_id, level="L1")
     if not l1_memories:
         raise HTTPException(422, "该会话没有 L1 记忆，先对话几轮再整合")
     l2 = consolidate_l2(l1_memories)
-    existing = memories_collection.find_one({"session_id": req.session_id, "level": "L2"})
-    if existing is None:
-        l2_id = str(memories_collection.insert_one(asdict(l2)).inserted_id)
-    else:
-        memories_collection.update_one(
-            {"_id": existing["_id"]},
-            {"$set": {"content": l2.content, "timestamp": l2.timestamp}},
-        )
-        l2_id = str(existing["_id"])
+    l2_id = upsert_l2(l2)
     return ConsolidateResponse(status="ok", l2_id=l2_id)
 ```
 
 **逐段讲解：**
 - **`level` 分流**：`"L5"` 走画像分支（输入是跨会话全部 L2 + 现有 L5，幂等键 `level="L5"` 全局一条）；
   其余走 L2 分支（输入是 `req.session_id` 的全部 L1，幂等键 `session_id + level`，每会话一条）。
-- **幂等检查**：`find_one` 先查已有记录，无则 `insert_one` 新建、有则 `update_one` 增量更新——重复点击按钮只更新。
+- **幂等由 service 层保证**：`upsert_l2`/`upsert_profile` 封装“查—增改”逻辑——端点只组数据、调函数、返结果，与模块 2 的分层铁律一致。
 - **`l2_id`/`profile_id` 返回 MongoDB `_id`**：文档主键全局唯一，比时间戳可靠（同一秒内两次整合会撞车）。
 - **空输入守卫**：两个分支各自在整合前检查输入为空 → 422，前端据此提示“先对话/先整合会话”。
 
@@ -572,7 +598,7 @@ cd backend && uv run pytest tests/test_memory.py -v
 
 **注入的历史记忆太多撑爆上下文？** `get_memories_for_context` 的 `limit`（默认 20）已限制；确需更多可调大，注意上下文窗口。
 
-**多轮对话后 memories 集合文档数越来越多？** `extract_l1` 的 recent_l1 历史窗口让重复事实在提取时即被跳过；已被 L2 覆盖的旧 L1 可定期 `delete_many` 清理。
+- [ ] `memory/store.py` 实现 `Memory`、`extract_l1`（6 类 + recent_l1 去重）、`consolidate_l2`（守卫）、`consolidate_profile`、`save_memory/load_memories`、`upsert_l2`/`upsert_profile`、`get_memories_for_context`
 
 **连续点击多次整合按钮会生成多条 L2 / L5 吗？** 只做增量更新。L2 按 `session_id` 幂等、L5 全局唯一，重复点击只更新已有条目。
 
