@@ -3,7 +3,7 @@
 > 前置模块：[模块 2：LangGraph Agent](./02-LangGraph-Agent.md)、[模块 3：HTML 前端](./03-HTML前端.md)
 > 本模块在 TiMem 论文五级 TMT（Segments → Sessions → Daily → Weekly → Profile）中选取
 > 三级实现：L1 segment、L2 session、L5 profile。L3/L4 的整合逻辑与 L2 同构
-> （下一级摘要 → 更高层摘要），选取首尾三层即可覆盖"细节→会话→画像"的完整链路。
+> （下一级摘要 → 更高层摘要），选取首尾三层即可覆盖“细节→会话→画像”的完整链路。
 
 ## 学习目标
 
@@ -12,7 +12,7 @@
 3. 理解整合的**两种触发机制**：TiMem 生产实现的空闲超时扫描与本教学项目的手动按钮触发
 4. 在 LangGraph 图中集成 `retrieve_memory` 与 `store_memory` 节点：本会话记忆直接注入，跨会话记忆由 profile 承担
 5. 实现 `POST /api/consolidate` 端点的两级整合能力（请求体 `level` 区分 L2/L5）与前端按钮，手动、即时地触发整合并保证幂等
-6. 理解"直接注入历史"（方案 A）与"检索注入"（方案 B）的取舍，以及提取时对比历史窗口（recent_l1）从源头减少重复
+6. 理解“直接注入历史”（方案 A）与“检索注入”（方案 B）的取舍，以及提取时对比历史窗口（recent_l1）从源头减少重复
 
 ## 模块结构
 
@@ -58,10 +58,10 @@ TiMem 论文（ACL 2026 Findings, arXiv:2601.02845）提出 TMT（Temporal Memor
 ### 为什么 L2 可以直接喂 L5（源码证据）
 
 TiMem 的 L5 整合只消费下一层的 `content` 字符串与最近 3 条历史 L5，对下层是 Daily 还是 Weekly 并无结构依赖——
-`workflows/nodes/unified_processors.py:810` 在缺少 L4 时会回退用 L3 生成 L5，说明"给一批摘要文本 + 历史画像"
+`workflows/nodes/unified_processors.py:810` 在缺少 L4 时会回退用 L3 生成 L5，说明“给一批摘要文本 + 历史画像”
 就是 L5 的全部输入约定。因此教学版让 L2 直接作为 L5 的输入，机制上与生产实现同构。
 
-代价：TiMem 原本在 L3/L4 prompt 里完成的"画像分类提炼"（L3 四类：关键事件 / 态度与偏好 / 决策过程 / 情绪变化，
+代价：TiMem 原本在 L3/L4 prompt 里完成的“画像分类提炼”（L3 四类：关键事件 / 态度与偏好 / 决策过程 / 情绪变化，
 见 `config/prompts.yaml:60-64`）失去载体。教学版用两项补偿：L1 提取带 6 类范围指引（见第 2 步），
 L5 整合 prompt 带画像维度指引（见 2.4）。
 
@@ -146,8 +146,8 @@ class Memory:
   2. **用户偏好与倾向**：喜欢、不喜欢、倾向
   3. **用户关注的话题**：论文、方法、工具、概念——**允许从用户的问题推断**（原版漏掉的关键类）
   4. **用户决策与计划**：决定用某方案、计划做某事
-  5. **用户提供的关键信息**：环境、约束、事实陈述（如"我的 GPU 是 4090"）
-  6. **对话确认的领域知识**：可复用的结论、概念（如"KSSE 用 QC-LDPC 图"）
+  5. **用户提供的关键信息**：环境、约束、事实陈述（如“我的 GPU 是 4090”）
+  6. **对话确认的领域知识**：可复用的结论、概念（如“KSSE 用 QC-LDPC 图”）
 - **统一标准**：可长期复用、对话有依据、原子化（一条事实一件事）；忽略寒暄/一次性信息
 - 输出：JSON 数组，每条一个陈述句
 - **去重规则**：与已有记忆重复的事实跳过
@@ -196,7 +196,7 @@ def extract_l1(dialogue: dict, session_id: str, recent_l1: list[Memory] = []) ->
 **逐段讲解：**
 - **`recent_l1` 历史窗口（本版新增）**：把该会话最近的 L1 记忆拼进 prompt（`recent_block`），让 LLM **对比后跳过重复**——论文 3.2 的 Historical Memories（w=3 滑动窗口）。用户重复表达同一事实时，只有第一遍被存下来。**去重在提取时就做，而不是存完再清理**——记忆量少时直接注入全部历史（方案 A），重复数据会占据上下文，去重更关键。
   去重依赖 LLM 遵守“跳过已有记忆”的指令，属于软约束而非硬保证——TiMem 生产实现同样只靠 prompt 指令（“Do not repeat any content from historical memories”，`prompts.yaml:8,11`），零算法去重。
-- **范围扩展（本版新增）**：原版只提"关于用户的事实（偏好、研究方向、背景、决策）"，漏掉"用户关注了什么"和"对话中的领域知识"。扩展后，一轮"这论文怎么分类的？"能提取出 `"用户关注KSSE谱嵌入"`、`"KSSE用QC-LDPC稀疏图做谱嵌入"`——**第 3 类（关注话题，允许从问题推断）是最大改进**，原版这类一轮提取不出任何东西。
+- **范围扩展（本版新增）**：原版只提“关于用户的事实（偏好、研究方向、背景、决策）”，漏掉“用户关注了什么”和“对话中的领域知识”。扩展后，一轮“这论文怎么分类的？”能提取出 `"用户关注KSSE谱嵌入"`、`"KSSE用QC-LDPC稀疏图做谱嵌入"`——**第 3 类（关注话题，允许从问题推断）是最大改进**，原版这类一轮提取不出任何东西。
   这一 6 类范围是教学版对 TiMem 的有意偏离：TiMem 的 L1 prompt（`config/prompts.yaml:3-28`）本身无分类体系，分类提炼发生在 L3（四类，`prompts.yaml:60-64`）。省略 L3/L4 后，画像分类的素材需要在 L1 就带方向性，L5 整合才能产出有结构的画像。
 - **容错提示**：生产建议用 LangChain 的 `with_structured_output` + Pydantic schema 替代裸 `json.loads`，教学示例保留最简形式。
 - **segment 单位**：本模块以一轮对话（user + assistant 各一条）为一个 L1 提取单位；TiMem 生产实现是固定 2 轮对话对（`config/settings.yaml:258` `fragment_size: 2`，`utils/dataset_parser.py:117` 按奇偶索引配对）。每轮提取粒度更细、事实更原子化，代价是 LLM 调用次数翻倍——教学场景优先可读性。
@@ -418,7 +418,7 @@ async def consolidate(req: ConsolidateRequest):
   其余走 L2 分支（输入是 `req.session_id` 的全部 L1，幂等键 `session_id + level`，每会话一条）。
 - **幂等检查**：`find_one` 先查已有记录，无则 `insert_one` 新建、有则 `update_one` 增量更新——重复点击按钮只更新。
 - **`l2_id`/`profile_id` 返回 MongoDB `_id`**：文档主键全局唯一，比时间戳可靠（同一秒内两次整合会撞车）。
-- **空输入守卫**：两个分支各自在整合前检查输入为空 → 422，前端据此提示"先对话/先整合会话"。
+- **空输入守卫**：两个分支各自在整合前检查输入为空 → 422，前端据此提示“先对话/先整合会话”。
 
 ## 第 4 步：集成到 Agent 图
 
@@ -478,6 +478,18 @@ function newSession() {
 
 ### 5.2 两个整合按钮（沿用模块 3 的 consolidateMemory，新增 consolidateProfile）
 
+控件区在模块 3 的基础上新增两个按钮（对齐 03 §1.2 的控件区写法）：
+
+```html
+<div id="controls">
+  <button id="new-session-btn">新会话</button>
+  <button id="consolidate-btn">整合会话记忆（L2）</button>
+  <button id="profile-btn">整合画像（L5）</button>
+</div>
+```
+
+三个按钮的 `id` 与后文 JS 绑定一一对应：`consolidate-btn` 是模块 3 已有按钮（沿用），`new-session-btn` 与 `profile-btn` 是本模块新增。
+
 ```javascript
 async function consolidateMemory() {   // 「整合会话记忆」（consolidate-btn，模块 3 已有）
   const res = await fetch('http://localhost:8000/api/consolidate', {
@@ -526,7 +538,7 @@ cd backend && uv run pytest tests/test_memory.py -v
 ## 完成检查
 
 - [ ] `memory/store.py` 实现 `Memory`、`extract_l1`（6 类 + recent_l1 去重）、`consolidate_l2`（守卫）、`consolidate_profile`、`save_memory/load_memories`、`get_memories_for_context`
-- [ ] Agent 图扩展为含 `get_memories` / `store_memory` 节点，同会话连续对话能引用历史记忆
+- [ ] Agent 图扩展为含 `retrieve_memory` / `store_memory` 节点，同会话连续对话能引用历史记忆
 - [ ] `POST /api/consolidate`（`level` 区分 L2/L5）实现且幂等，空输入返回 422
 - [ ] 前端「新会话」「整合会话记忆」「整合画像」三按钮工作正常
 - [ ] `uv run pytest tests/test_memory.py -v` 全部通过
