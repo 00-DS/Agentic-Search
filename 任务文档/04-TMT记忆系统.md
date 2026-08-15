@@ -62,7 +62,7 @@ TiMem 的 L5 整合只消费下一层的 `content` 字符串与最近 3 条历�
 就是 L5 的全部输入约定。因此教学版让 L2 直接作为 L5 的输入，机制上与生产实现同构。
 
 代价：TiMem 原本在 L3/L4 prompt 里完成的"画像分类提炼"（L3 四类：关键事件 / 态度与偏好 / 决策过程 / 情绪变化，
-见 `config/prompts.yaml:55-60`）失去载体。教学版用两项补偿：L1 提取带 6 类范围指引（见第 2 步），
+见 `config/prompts.yaml:60-64`）失去载体。教学版用两项补偿：L1 提取带 6 类范围指引（见第 2 步），
 L5 整合 prompt 带画像维度指引（见 2.4）。
 
 > ⚠️ 阅读 TiMem 源码时注意：生产链路在 `timem/workflows/` 与 `services/session_memory_scanner.py`；
@@ -195,9 +195,9 @@ def extract_l1(dialogue: dict, session_id: str, recent_l1: list[Memory] = []) ->
 
 **逐段讲解：**
 - **`recent_l1` 历史窗口（本版新增）**：把该会话最近的 L1 记忆拼进 prompt（`recent_block`），让 LLM **对比后跳过重复**——论文 3.2 的 Historical Memories（w=3 滑动窗口）。用户重复表达同一事实时，只有第一遍被存下来。**去重在提取时就做，而不是存完再清理**——记忆量少时直接注入全部历史（方案 A），重复数据会占据上下文，去重更关键。
-  去重依赖 LLM 遵守“跳过已有记忆”的指令，属于软约束而非硬保证——TiMem 生产实现同样只靠 prompt 指令（“Do not repeat any content from historical memories”，`prompts.yaml:8,14`），零算法去重。
+  去重依赖 LLM 遵守“跳过已有记忆”的指令，属于软约束而非硬保证——TiMem 生产实现同样只靠 prompt 指令（“Do not repeat any content from historical memories”，`prompts.yaml:8,11`），零算法去重。
 - **范围扩展（本版新增）**：原版只提"关于用户的事实（偏好、研究方向、背景、决策）"，漏掉"用户关注了什么"和"对话中的领域知识"。扩展后，一轮"这论文怎么分类的？"能提取出 `"用户关注KSSE谱嵌入"`、`"KSSE用QC-LDPC稀疏图做谱嵌入"`——**第 3 类（关注话题，允许从问题推断）是最大改进**，原版这类一轮提取不出任何东西。
-  这一 6 类范围是教学版对 TiMem 的有意偏离：TiMem 的 L1 prompt（`config/prompts.yaml:3-28`）本身无分类体系，分类提炼发生在 L3（四类，`prompts.yaml:55-60`）。省略 L3/L4 后，画像分类的素材需要在 L1 就带方向性，L5 整合才能产出有结构的画像。
+  这一 6 类范围是教学版对 TiMem 的有意偏离：TiMem 的 L1 prompt（`config/prompts.yaml:3-28`）本身无分类体系，分类提炼发生在 L3（四类，`prompts.yaml:60-64`）。省略 L3/L4 后，画像分类的素材需要在 L1 就带方向性，L5 整合才能产出有结构的画像。
 - **容错提示**：生产建议用 LangChain 的 `with_structured_output` + Pydantic schema 替代裸 `json.loads`，教学示例保留最简形式。
 - **segment 单位**：本模块以一轮对话（user + assistant 各一条）为一个 L1 提取单位；TiMem 生产实现是固定 2 轮对话对（`config/settings.yaml:258` `fragment_size: 2`，`utils/dataset_parser.py:117` 按奇偶索引配对）。每轮提取粒度更细、事实更原子化，代价是 LLM 调用次数翻倍——教学场景优先可读性。
 
@@ -251,7 +251,7 @@ def consolidate_profile(l2_memories: list[Memory], previous_profile: Memory | No
 
     previous_profile: 现有 L5（首次生成时为 None）。传入旧画像让 LLM 做“合并新信息、
     修正过时信息”的增量更新——对应论文 Historical Memories 的思想：高层整合参考同层
-    历史保持连续性（TiMem 中 L5 参考最近 3 条历史 L5，`workflows/nodes/unified_processors.py:873`）。
+    历史保持连续性（TiMem 中 L5 参考最近 3 条历史 L5，`workflows/nodes/unified_processors.py:888`）。
     """
     if not l2_memories:
         raise ValueError("还没有任何 L2 会话摘要，先整合至少一个会话")
