@@ -234,6 +234,7 @@ class Memory:
 
 ```markdown
   去重依赖 LLM 遵守“跳过已有记忆”的指令，属于软约束而非硬保证——TiMem 生产实现同样只靠 prompt 指令（“Do not repeat any content from historical memories”，`prompts.yaml:8,14`），零算法去重。
+```
 
 3. “逐段讲解”末尾新增 segment 单位说明段：
 
