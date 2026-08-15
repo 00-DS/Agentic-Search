@@ -13,6 +13,7 @@
 - 只改 `任务文档/04-TMT记忆系统.md` 一个文件；`任务文档/模块4优化版.md` 保持原样。
 - 措辞政策：只写“为什么这样、如何用”，全文禁用“不使用 XXX / 不采用 XXX”式否定措辞。
 - 数据契约：`doc_id`/`filename`（文档侧）、`session_id`、`level ∈ {"L1","L2","L5"}`；L5 的 `session_id=None`；不加 `user_id` 字段。
+- **01-03 契约对齐（spec“与模块 01-03 已定契约的对齐”节，全文强制）**：端点总数固定 4 个，L5 复用 `POST /api/consolidate`（请求体 `level` 字段区分 `"L2"`/`"L5"`，缺省 `"L2"`）；`ConsolidateRequest` 只增量加 `level`、`ConsolidateResponse` 只增量加 `profile_id`、`QueryRequest` 只增量加 `session_id: str = "default"`；路由风格 `@router.post` + `async def consolidate(req: ConsolidateRequest)`；前端复用 03 的 `currentSessionId`/`consolidateMemory()`/`consolidate-btn`，新增 `consolidateProfile()`/`profile-btn`/`newSession()`/`new-session-btn`；状态类 `class MemoryState(MessagesState): session_id: str`。文档中**禁止出现** `/api/consolidate_profile`。
 - 教学示例代码必须与 spec §2/§3 的签名逐字一致。
 - TiMeM 源码引用必须真实可定位（spec“TiMeM 源码事实”表中的文件+行号）。
 - 每个 Task 结束 commit，消息前缀 `docs(04):`。
@@ -48,7 +49,7 @@
 2. 用 Python + LLM + MongoDB 从零实现 **L1 事实提取**（每轮对话后自动触发）、**L2 会话摘要**与 **L5 用户画像**（均手动触发）
 3. 理解整合的**两种触发机制**：TiMem 生产实现的空闲超时扫描与本教学项目的手动按钮触发
 4. 在 LangGraph 图中集成 `get_memories` 与 `store_memory` 节点：本会话记忆直接注入，跨会话记忆由 profile 承担
-5. 实现 `POST /api/consolidate` 与 `POST /api/consolidate_profile` 端点与前端按钮，手动、即时地触发两级整合并保证幂等
+5. 实现 `POST /api/consolidate` 端点的两级整合能力（请求体 `level` 区分 L2/L5）与前端按钮，手动、即时地触发整合并保证幂等
 6. 理解“直接注入历史”（方案 A）与“检索注入”（方案 B）的取舍，以及提取时对比历史窗口（recent_l1）从源头减少重复
 ```
 
@@ -69,8 +70,8 @@ graph LR
     subgraph L5["L5 整合 · 按钮触发"]
         Profile["consolidate_profile<br/>更新用户画像"]
     end
-    ButtonA["整合会话记忆按钮"] -.->|"POST /api/consolidate"| Consolidate
-    ButtonB["整合画像按钮"] -.->|"POST /api/consolidate_profile"| Profile
+    ButtonA["整合会话记忆按钮"] -.->|"POST /api/consolidate<br/>level=L2"| Consolidate
+    ButtonB["整合画像按钮"] -.->|"POST /api/consolidate<br/>level=L5"| Profile
     Extract -.->|"作为输入"| Consolidate
     Consolidate -.->|"全部 L2 作为输入"| Profile
     Consolidate --> Store
@@ -387,80 +388,85 @@ git commit -m "docs(04): consolidate_l2 守卫 + consolidate_profile 新小节 +
 
 ---
 
-### Task 4: 第 3 步（两个整合端点）+ 第 4 步（Agent 图集成）
+### Task 4: 第 3 步（单一整合端点，level 区分 L2/L5）+ 第 4 步（Agent 图集成）
 
 **Files:**
 - Modify: `任务文档/04-TMT记忆系统.md`（追加）
 
 **Interfaces:**
-- Consumes: Task 3 的 `consolidate_l2`/`consolidate_profile`/`load_memories`/`memories_collection`；草稿 §“第 3 步”/§“第 4 步”结构。
-- Produces: `/api/consolidate` 与 `/api/consolidate_profile` 的请求/响应契约（Task 5 前端引用）；`MemoryState` 扩展（Task 6 测试引用）。
+- Consumes: Task 3 的 `consolidate_l2`/`consolidate_profile`/`load_memories`/`memories_collection`；02 §9.4 的路由风格（`@router.post` + `response_model` + `async def req`）与既有 `ConsolidateRequest`/`ConsolidateResponse`。
+- Produces: `/api/consolidate` 的两级契约（请求加 `level`、响应加 `profile_id`，纯增量——Task 5 前端引用）；`MemoryState` 扩展（Task 6 测试引用）。
 
 - [ ] **Step 1: 追加“第 3 步：手动整合端点”**
 
 ```markdown
-## 第 3 步：手动整合端点
+## 第 3 步：手动整合端点（`level` 区分两级）
 
-### 3.1 L2 端点 `POST /api/consolidate`（api/routes.py）
+模块 2 §9.4 在 `api/routes.py` 预留的 `/api/consolidate` 占位（返回 `status="pending"`）在本模块转正。
+L2 与 L5 共用这一个端点——请求体的 `level` 字段区分（缺省 `"L2"`，模块 3 的按钮请求原样兼容），
+API 总数保持 4 个不变。
+
+### 3.1 schemas.py 增量扩展（api/schemas.py）
 
 ```python
-from agentic_search.memory.store import (
-    save_memory, load_memories, consolidate_l2, consolidate_profile, memories_collection,
-)
+class ConsolidateRequest(BaseModel):
+    """POST /api/consolidate 的请求体。"""
+    session_id: str         # 会话 ID（level="L5" 时仅作占位，画像整合与具体会话无关）
+    level: str = "L2"       # 整合级别："L2" 会话摘要 / "L5" 用户画像
 
-@app.post("/api/consolidate")
-def consolidate(request: ConsolidateRequest):
-    session_id = request.session_id
-    l1_memories = load_memories(session_id=session_id, level="L1")
+
+class ConsolidateResponse(BaseModel):
+    """POST /api/consolidate 的响应。"""
+    status: str             # 状态
+    l2_id: str = ""         # level="L2" 时为生成的 L2 记忆 ID，否则为空
+    profile_id: str = ""    # level="L5" 时为画像记忆 ID，否则为空
+```
+
+### 3.2 端点转正（api/routes.py，替换模块 2 的占位函数体）
+
+```python
+@router.post("/consolidate", response_model=ConsolidateResponse)
+async def consolidate(req: ConsolidateRequest):
+    """手动触发记忆整合：level="L2" 整合该会话，level="L5" 整合全局画像。"""
+    if req.level == "L5":
+        l2_memories = load_memories(level="L2")
+        if not l2_memories:
+            raise HTTPException(422, "还没有会话摘要，先整合至少一个会话")
+        previous = load_memories(level="L5")
+        profile = consolidate_profile(l2_memories, previous[0] if previous else None)
+        existing = memories_collection.find_one({"level": "L5"})
+        if existing is None:
+            profile_id = str(memories_collection.insert_one(asdict(profile)).inserted_id)
+        else:
+            memories_collection.update_one(
+                {"_id": existing["_id"]},
+                {"$set": {"content": profile.content, "timestamp": profile.timestamp}},
+            )
+            profile_id = str(existing["_id"])
+        return ConsolidateResponse(status="ok", profile_id=profile_id)
+
+    l1_memories = load_memories(session_id=req.session_id, level="L1")
     if not l1_memories:
         raise HTTPException(422, "该会话没有 L1 记忆，先对话几轮再整合")
     l2 = consolidate_l2(l1_memories)
-
-    existing = memories_collection.find_one({"session_id": session_id, "level": "L2"})
+    existing = memories_collection.find_one({"session_id": req.session_id, "level": "L2"})
     if existing is None:
-        result = memories_collection.insert_one(asdict(l2))
-        doc_id = str(result.inserted_id)
+        l2_id = str(memories_collection.insert_one(asdict(l2)).inserted_id)
     else:
         memories_collection.update_one(
             {"_id": existing["_id"]},
             {"$set": {"content": l2.content, "timestamp": l2.timestamp}},
         )
-        doc_id = str(existing["_id"])
-    return {"status": "ok", "l2_id": doc_id}
+        l2_id = str(existing["_id"])
+    return ConsolidateResponse(status="ok", l2_id=l2_id)
 ```
 
 **逐段讲解：**
-- `load_memories(session_id, level="L1")` 查出本次会话的全部 L1；空列表直接 422，提示先对话。
-- **幂等检查**：`find_one({"session_id": ..., "level": "L2"})` 精确定位同会话 L2。无则新建，有则增量更新——每会话最多一条 L2。
-- **`l2_id` 返回 MongoDB `_id`**：文档主键全局唯一，比时间戳可靠（同一秒内两次整合会撞车）。
-
-### 3.2 L5 端点 `POST /api/consolidate_profile`
-
-```python
-@app.post("/api/consolidate_profile")
-def consolidate_profile_endpoint():
-    l2_memories = load_memories(level="L2")
-    if not l2_memories:
-        raise HTTPException(422, "还没有任何会话摘要，先整合至少一个会话")
-    previous = load_memories(level="L5")
-    profile = consolidate_profile(l2_memories, previous[0] if previous else None)
-
-    existing = memories_collection.find_one({"level": "L5"})
-    if existing is None:
-        result = memories_collection.insert_one(asdict(profile))
-        doc_id = str(result.inserted_id)
-    else:
-        memories_collection.update_one(
-            {"_id": existing["_id"]},
-            {"$set": {"content": profile.content, "timestamp": profile.timestamp}},
-        )
-        doc_id = str(existing["_id"])
-    return {"status": "ok", "profile_id": doc_id}
-```
-
-**逐段讲解：**
-- 输入是**跨会话全部 L2**（`load_memories(level="L2")` 只按层级过滤）+ 现有 L5。
-- 幂等键是 `level="L5"` 单条件——画像全局唯一，与具体会话无关。
+- **`level` 分流**：`"L5"` 走画像分支（输入是跨会话全部 L2 + 现有 L5，幂等键 `level="L5"` 全局一条）；
+  其余走 L2 分支（输入是 `req.session_id` 的全部 L1，幂等键 `session_id + level`，每会话一条）。
+- **幂等检查**：`find_one` 先查已有记录，无则 `insert_one` 新建、有则 `update_one` 增量更新——重复点击按钮只更新。
+- **`l2_id`/`profile_id` 返回 MongoDB `_id`**：文档主键全局唯一，比时间戳可靠（同一秒内两次整合会撞车）。
+- **空输入守卫**：两个分支各自在整合前检查输入为空 → 422，前端据此提示“先对话/先整合会话”。
 ```
 
 - [ ] **Step 2: 追加“第 4 步：集成到 Agent 图”**
@@ -505,8 +511,10 @@ def get_memories(state):
 
 - [ ] **Step 3: 验证**
 
-Run: `grep -n "consolidate_profile_endpoint\|MemoryState" "任务文档/04-TMT记忆系统.md"`
-Expected: 各 ≥1 处。
+Run: `grep -n "consolidate_profile\|MemoryState" "任务文档/04-TMT记忆系统.md" | head -8`
+Expected: `MemoryState` ≥1 处；`consolidate_profile` 命中处均为 store.py 函数名/讲解，无 `/api/consolidate_profile` 端点。
+Run: `grep -n "api/consolidate_profile" "任务文档/04-TMT记忆系统.md"`
+Expected: 无输出（新增端点零出现）。
 Run: `grep -n "l2_id.*timestamp\|l2_id = l2.timestamp" "任务文档/04-TMT记忆系统.md"`
 Expected: 无输出（P8 已修）。
 
@@ -514,7 +522,7 @@ Expected: 无输出（P8 已修）。
 
 ```bash
 git add "任务文档/04-TMT记忆系统.md"
-git commit -m "docs(04): 两个整合端点（空输入守卫+_id 返回）+ Agent 图两段式注入"
+git commit -m "docs(04): /api/consolidate 转正为 level 分流端点 + Agent 图两段式注入"
 ```
 
 ---
@@ -533,45 +541,50 @@ git commit -m "docs(04): 两个整合端点（空输入守卫+_id 返回）+ Age
 ```markdown
 ## 第 5 步：前端
 
-### 5.1 session_id 生命周期
+### 5.1 会话管理（替换模块 3 的写死值）
+
+模块 3 在 `app.js` 里写死了 `const currentSessionId = "demo-session"` 并注明"模块 4 接入会话管理后替换"——本步兑现：
 
 ```javascript
 // 页面加载：从 localStorage 取，取不到才生成（刷新保持同一会话）
 let currentSessionId = localStorage.getItem("session_id") || crypto.randomUUID();
 localStorage.setItem("session_id", currentSessionId);
 
-// 「新会话」按钮：显式重置会话边界
+// 「新会话」按钮（new-session-btn）：显式重置会话边界
 function newSession() {
   currentSessionId = crypto.randomUUID();
   localStorage.setItem("session_id", currentSessionId);
-  clearChat();   // 清空聊天区
+  messagesEl.innerHTML = "";   // 清空聊天区（messagesEl 是模块 3 已取的元素引用）
 }
 ```
 
 **设计意图**：会话边界完全由用户显式控制——刷新页面继续同一会话（L1/L2 继续累积到同一 session_id 下），
 点「新会话」才切换。切换后注入上下文的记忆只剩全局画像一条，跨会话记忆由 profile 承担。
 
-### 5.2 两个整合按钮
+### 5.2 两个整合按钮（沿用模块 3 的 consolidateMemory，新增 consolidateProfile）
 
 ```javascript
-async function consolidateMemory() {   // 「整合会话记忆」
+async function consolidateMemory() {   // 「整合会话记忆」（consolidate-btn，模块 3 已有）
   const res = await fetch('http://localhost:8000/api/consolidate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: currentSessionId })
+    body: JSON.stringify({ session_id: currentSessionId })   // level 缺省即 "L2"，模块 3 的请求体原样兼容
   });
   if (res.status === 422) { alert('该会话还没有可整合的记忆，先对话几轮'); return; }
   const { l2_id } = await res.json();
   alert(`L2 整合完成（${l2_id}）`);
 }
 
-async function consolidateProfileMemory() {   // 「整合画像」
-  const res = await fetch('http://localhost:8000/api/consolidate_profile', { method: 'POST' });
+async function consolidateProfile() {   // 「整合画像」（profile-btn，本模块新增）
+  const res = await fetch('http://localhost:8000/api/consolidate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: currentSessionId, level: "L5" })
+  });
   if (res.status === 422) { alert('还没有会话摘要，先整合至少一个会话'); return; }
   const { profile_id } = await res.json();
   alert(`画像更新完成（${profile_id}）`);
 }
-```
 ```
 
 - [ ] **Step 2: 追加“第 6 步：编写 tests/test_memory.py”**
@@ -608,7 +621,7 @@ cd backend && uv run pytest tests/test_memory.py -v
 
 - [ ] `memory/store.py` 实现 `Memory`、`extract_l1`（6 类 + recent_l1 去重）、`consolidate_l2`（守卫）、`consolidate_profile`、`save_memory/load_memories`、`get_memories_for_context`
 - [ ] Agent 图扩展为含 `get_memories` / `store_memory` 节点，同会话连续对话能引用历史记忆
-- [ ] `POST /api/consolidate` 与 `POST /api/consolidate_profile` 实现且幂等，空输入返回 422
+- [ ] `POST /api/consolidate`（`level` 区分 L2/L5）实现且幂等，空输入返回 422
 - [ ] 前端「新会话」「整合会话记忆」「整合画像」三按钮工作正常
 - [ ] `uv run pytest tests/test_memory.py -v` 全部通过
 - [ ] 对话几轮 → 点「整合会话记忆」→ Compass 中 `memories` 出现该会话 L2；再点「整合画像」→ 出现全局唯一 L5（`session_id: null`）
@@ -688,6 +701,8 @@ Run: `grep -n "retrieve\|检索相关记忆" "任务文档/04-TMT记忆系统.md
 Expected: 命中处均为“方案 B / 将来换检索”语境，无“本模块用检索”表述（P1-P8 无残留的抽查）。
 Run: `git diff --stat "任务文档/模块4优化版.md"`
 Expected: 无输出（草稿未被改动）。
+Run: `grep -n "api/consolidate_profile" "任务文档/04-TMT记忆系统.md"`
+Expected: 无输出（01-03 契约对齐：全文零出现第五端点）。
 人工抽查（验收标准 3）：文档中每处 TiMeM 引用（`settings.yaml:258`、`prompts.yaml:3-28/55-60/8,14`、`unified_processors.py:810/873`、`session_memory_scanner.py`）在 `D:\Hermes\Capybara Workspace\Research\Works\Agentic Search计划\TiMEM` 下打开核对一次。
 
 - [ ] **Step 3: Commit**

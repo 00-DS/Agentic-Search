@@ -86,16 +86,30 @@ class Memory:
 | `get_memories_for_context(session_id)` | 返回 `[L5 唯一条] + [本会话 L1/L2 按时间倒序 ≤20]` |
 | `save_memory` / `load_memories` | 沿用草稿 |
 
-端点：`POST /api/consolidate`（L2，占位端点转正；空 L1 返回 422）、
-`POST /api/consolidate_profile`（L5；空 L2 返回 422）；均幂等，返回 upsert 后的 `_id`（P8）。
+### 与模块 01-03 已定契约的对齐（不可冲突，只做增量）
 
-`QueryRequest` 加 `session_id: str`；`MemoryState(MessagesState)` 加 `session_id: str`；
-graph `get_memories` 节点注入格式区分 profile 与本会话记忆两段。
+02/03 已落地的命名（`api/schemas.py`、02 §9.4、03 §8/§9）：
+
+- 端点就 4 个：`/api/query`、`/api/ingest`、`/api/documents`、`/api/consolidate`——L5 整合**复用 `/api/consolidate`**，通过请求体的 `level` 字段区分，而非新增第五个端点。
+- `ConsolidateRequest{session_id}` → 增量加 `level: str = "L2"`（缺省兼容 03 现有按钮）。
+- `ConsolidateResponse{status, l2_id}` → 增量加 `profile_id: str = ""`（L2 路径填 l2_id，L5 路径填 profile_id，另一个留空）。
+- `QueryRequest{question}` → 增量加 `session_id: str = "default"`（02 的 `{question}` 请求仍合法）。
+- 路由风格沿用 02：`@router.post("/consolidate", response_model=ConsolidateResponse)` + `async def consolidate(req: ConsolidateRequest)`。
+- 前端沿用 03 的 `currentSessionId`（03 写死 `"demo-session"` 并注明"模块 4 替换为真实会话管理"——替换正是 04 的任务）、`consolidateMemory()`、`consolidate-btn`；新增 `consolidateProfile()`、`profile-btn`、`newSession()`、`new-session-btn`。
+- 状态类沿用 04 现文与 02 的 `MessagesState` 体系：`class MemoryState(MessagesState): session_id: str`。
+
+### 端点设计（单一端点，level 区分）
+
+`POST /api/consolidate` 请求 `{"session_id": "...", "level": "L2" | "L5"}`（`level` 缺省 `"L2"`）：
+
+- `level="L2"`：整合该会话 L1 → 1 条 L2（幂等键 `{session_id, level:"L2"}`）；空 L1 返回 422；响应 `{status: "ok", l2_id: "<_id>", profile_id: ""}`。
+- `level="L5"`：整合全部 L2 + 旧 L5 → 全局唯一 L5（幂等键 `{level:"L5"}`）；空 L2 返回 422；响应 `{status: "ok", l2_id: "", profile_id: "<_id>"}`。
+- 返回 upsert 后的 `_id`（P8）。
 
 ### 4. 前端（文档教学示例）
 
-- session_id 存 `localStorage`，「新会话」按钮清空重生成并清空聊天区。
-- 「整合会话记忆」→ `/api/consolidate`；「整合画像」→ `/api/consolidate_profile`；均提示完成。
+- `currentSessionId` 从 03 的写死值替换为真实会话管理：`localStorage` 持久化 + `crypto.randomUUID()`，「新会话」按钮（`new-session-btn`）清空重生成并清空聊天区。
+- 「整合会话记忆」按钮沿用 03 的 `consolidateMemory()`（发 `level` 缺省请求）；「整合画像」按钮新增 `consolidateProfile()`（发 `{"session_id": currentSessionId, "level": "L5"}`）；均按 `status`/`profile_id` 提示完成。
 
 ### 5. 04 文档结构（重写大纲）
 
@@ -108,9 +122,9 @@ graph `get_memories` 节点注入格式区分 profile 与本会话记忆两段�
 4. **第 1 步 理解 TMT 思想**：论文阅读引导（沿用草稿）+ 三层概念。
 5. **第 2 步 memory/store.py**：Memory dataclass（§2）→ extract_l1（6 类 + recent_l1，沿用草稿）→
    consolidate_l2（守卫）→ **consolidate_profile（新增小节）** → Mongo CRUD → get_memories_for_context（改语义）。
-6. **第 3 步 端点**：/api/consolidate 转正 + /api/consolidate_profile 新增，幂等与 _id 返回。
+6. **第 3 步 端点**：/api/consolidate 占位转正，`level` 字段区分 L2/L5，幂等与 _id 返回。
 7. **第 4 步 Agent 图集成**：get_memories / store_memory 节点 + MemoryState 扩展。
-8. **第 5 步 前端**：session_id 生命周期 + 两个整合按钮 + 新会话按钮。
+8. **第 5 步 前端**：session_id 生命周期（替换 03 写死值）+ consolidateProfile 新按钮 + 新会话按钮。
 9. **第 6 步 tests/test_memory.py**：无需 LLM 的部分（往返一致性、排序与 limit、L2/L5 幂等、
    跨会话隔离——注入不含其他会话记忆、端点空输入守卫）；LLM 部分标记集成测试。
 10. **完成检查**：草稿检查表 + 三项新增（新会话只带 profile 记忆可答、L5 全局唯一、
