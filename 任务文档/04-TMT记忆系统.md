@@ -10,7 +10,7 @@
 1. 理解 TMT（时序记忆树）的核心思想——从对话中提取原子事实，按会话压缩为摘要，再跨会话提炼为用户画像
 2. 用 Python + LLM + MongoDB 从零实现 **L1 事实提取**（每轮对话后自动触发）、**L2 会话摘要**与 **L5 用户画像**（均手动触发）
 3. 理解整合的**两种触发机制**：TiMem 生产实现的空闲超时扫描与本教学项目的手动按钮触发
-4. 在 LangGraph 图中集成 `get_memories` 与 `store_memory` 节点：本会话记忆直接注入，跨会话记忆由 profile 承担
+4. 在 LangGraph 图中集成 `retrieve_memory` 与 `store_memory` 节点：本会话记忆直接注入，跨会话记忆由 profile 承担
 5. 实现 `POST /api/consolidate` 端点的两级整合能力（请求体 `level` 区分 L2/L5）与前端按钮，手动、即时地触发整合并保证幂等
 6. 理解"直接注入历史"（方案 A）与"检索注入"（方案 B）的取舍，以及提取时对比历史窗口（recent_l1）从源头减少重复
 
@@ -34,7 +34,7 @@ graph LR
     Consolidate -.->|"全部 L2 作为输入"| Profile
     Consolidate --> Store
     Profile --> Store
-    Store --> Retrieve["get_memories_for_context<br/>profile + 本会话最近记忆"]
+    Store --> Retrieve["retrieve_memory 节点<br/>调用 get_memories_for_context"]
     Retrieve --> AgentCtx["注入 Agent 上下文"]
     style L1 fill:#e8f5e9,stroke:#388e3c
     style L2 fill:#fce4ec,stroke:#c2185b
@@ -80,7 +80,7 @@ L5 整合 prompt 带画像维度指引（见 2.3）。
 **跨会话记忆由 profile 承担**：`get_memories_for_context(session_id)` 只取两类记忆——
 全局唯一的 L5 画像 + 该会话的 L1/L2（时间倒序，≤20 条）。开新会话时，Agent 带着画像记忆一切重点，
 旧会话的 L1/L2 留在库中作为下次整合画像的素材。将来记忆量级上来（>50 条），
-把 `get_memories_for_context` 的函数体换成检索实现即可，图编排不用动——函数名就是为切换预留的接口。
+把 `get_memories_for_context` 的函数体换成检索实现即可，图编排保持原样——函数名就是为切换预留的接口。
 
 ### 整合触发机制
 
@@ -88,7 +88,7 @@ L5 整合 prompt 带画像维度指引（见 2.3）。
 |------|---------------|-----------|
 | L2 触发器 | `SessionMemoryScanner` 每 10 分钟扫描，会话 idle ≥10 分钟视为结束 | 前端「整合会话记忆」按钮 |
 | L5 触发器 | 跨月检测自动回填（`core/catchup_detector.py`） | 前端「整合画像」按钮 |
-| 实现位置 | `services/session_memory_scanner.py`、`timem/workflows/` | `api/routes.py` 两个端点 |
+| 实现位置 | `services/session_memory_scanner.py`、`timem/workflows/` | `api/routes.py` 同一 /api/consolidate 端点（level 区分） |
 | 目的 | 生产自动化 | 教学即时可观察 |
 
 > 💡 **幂等性**：同一会话最多一条 L2（按 `session_id` 定位，有则更新）；全局最多一条 L5（按 `level` 定位，有则更新）。重复点击按钮只会增量更新。
