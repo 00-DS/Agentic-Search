@@ -453,3 +453,100 @@ def retrieve_memory(state):
 模块 2 的 `MessagesState` 需扩展：`class MemoryState(MessagesState): session_id: str`。`api/schemas.py` 的 `QueryRequest` 加 `session_id: str = "default"`，`/api/query` 端点把 session_id 传进 graph 的初始 state。
 
 **验证：** 会话 A 连续两轮提问（第二轮应看到第一轮的 L1 注入）；点「新会话」后提问「我是做什么的」——若已点过「整合画像」，Agent 应能基于 profile 回答。
+
+## 第 5 步：前端
+
+### 5.1 会话管理（替换模块 3 的写死值）
+
+模块 3 在 `app.js` 里写死了 `const currentSessionId = "demo-session"` 并注明“模块 4 接入会话管理后替换”——本步兑现：
+
+```javascript
+// 页面加载：从 localStorage 取，取不到才生成（刷新保持同一会话）
+let currentSessionId = localStorage.getItem("session_id") || crypto.randomUUID();
+localStorage.setItem("session_id", currentSessionId);
+
+// 「新会话」按钮（new-session-btn）：显式重置会话边界
+function newSession() {
+  currentSessionId = crypto.randomUUID();
+  localStorage.setItem("session_id", currentSessionId);
+  messagesEl.innerHTML = "";   // 清空聊天区（messagesEl 是模块 3 已取的元素引用）
+}
+```
+
+**设计意图**：会话边界完全由用户显式控制——刷新页面继续同一会话（L1/L2 继续累积到同一 session_id 下），
+点「新会话」才切换。切换后注入上下文的记忆只剩全局画像一条，跨会话记忆由 profile 承担。
+
+### 5.2 两个整合按钮（沿用模块 3 的 consolidateMemory，新增 consolidateProfile）
+
+```javascript
+async function consolidateMemory() {   // 「整合会话记忆」（consolidate-btn，模块 3 已有）
+  const res = await fetch('http://localhost:8000/api/consolidate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: currentSessionId })   // level 缺省即 "L2"，模块 3 的请求体原样兼容
+  });
+  if (res.status === 422) { alert('该会话还没有可整合的记忆，先对话几轮'); return; }
+  const { l2_id } = await res.json();
+  alert(`L2 整合完成（${l2_id}）`);
+}
+
+async function consolidateProfile() {   // 「整合画像」（profile-btn，本模块新增）
+  const res = await fetch('http://localhost:8000/api/consolidate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: currentSessionId, level: "L5" })
+  });
+  if (res.status === 422) { alert('还没有会话摘要，先整合至少一个会话'); return; }
+  const { profile_id } = await res.json();
+  alert(`画像更新完成（${profile_id}）`);
+}
+```
+
+## 第 6 步：编写 `tests/test_memory.py`
+
+重点测试零 LLM 依赖的部分：
+
+- Memory 数据结构字段完整性（含 L5 的 `session_id=None`）
+- MongoDB 存取往返一致性（save_memory → load_memories → 对比）
+- `get_memories_for_context`：profile 在前 + 本会话 L1/L2 时间倒序 + limit 生效 + **其他会话记忆被隔离**
+- L2 幂等：同一会话二次 consolidate 更新而非新增
+- L5 幂等：二次 consolidate_profile 更新而非新增（全库仍只有一条 L5）
+- 端点空输入守卫（无 L1 的会话 / 无 L2 的库 → 422）
+
+L1 / L2 / L5 的 LLM 调用涉及真实模型，标记为集成测试（对齐 `test_graph.py` 打真 LLM 的做法）。
+
+**验证：**
+
+```bash
+cd backend && uv run pytest tests/test_memory.py -v
+```
+
+全部通过。
+
+## 完成检查
+
+- [ ] `memory/store.py` 实现 `Memory`、`extract_l1`（6 类 + recent_l1 去重）、`consolidate_l2`（守卫）、`consolidate_profile`、`save_memory/load_memories`、`get_memories_for_context`
+- [ ] Agent 图扩展为含 `get_memories` / `store_memory` 节点，同会话连续对话能引用历史记忆
+- [ ] `POST /api/consolidate`（`level` 区分 L2/L5）实现且幂等，空输入返回 422
+- [ ] 前端「新会话」「整合会话记忆」「整合画像」三按钮工作正常
+- [ ] `uv run pytest tests/test_memory.py -v` 全部通过
+- [ ] 对话几轮 → 点「整合会话记忆」→ Compass 中 `memories` 出现该会话 L2；再点「整合画像」→ 出现全局唯一 L5（`session_id: null`）
+- [ ] 点「新会话」后问「我是做什么的」→ Agent 基于 profile 回答（跨会话记忆生效）
+- [ ] 同一事实重复表达多轮，L1 中重复明显减少（prompt 级软去重，非硬保证）
+- [ ] 二次点「整合画像」→ L5 仍只有一条，content 被更新
+
+## 常见问题
+
+**L1 提取返回空列表？** 对话中可能没有可长期复用的事实；或对话过于寒暄。调整 prompt 的提取规则再试。
+
+**注入的历史记忆太多撑爆上下文？** `get_memories_for_context` 的 `limit`（默认 20）已限制；确需更多可调大，注意上下文窗口。
+
+**多轮对话后 memories 集合文档数越来越多？** `extract_l1` 的 recent_l1 历史窗口让重复事实在提取时即被跳过；已被 L2 覆盖的旧 L1 可定期 `delete_many` 清理。
+
+**连续点击多次整合按钮会生成多条 L2 / L5 吗？** 只做增量更新。L2 按 `session_id` 幂等、L5 全局唯一，重复点击只更新已有条目。
+
+**L5 画像什么时候更新？** 每次点「整合画像」都用当前全部 L2 + 旧 L5 重新合成——新会话的信息在它的 L2 生成后，下次点按钮就会进入画像。
+
+**刷新页面后记忆还在吗？** 在。记忆存 MongoDB；刷新保持同一 session_id（localStorage），本会话 L1/L2 继续累积。
+
+**将来记忆多了怎么办？** 把 `get_memories_for_context` 的函数体从“最近 N 条”换成“按关键词检索”（方案 B），图编排保持原样——函数名就是为切换预留的接口。
