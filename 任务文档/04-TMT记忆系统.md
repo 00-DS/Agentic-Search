@@ -12,7 +12,7 @@
 3. 理解整合的**两种触发机制**：TiMem 生产实现的空闲超时扫描与本教学项目的手动按钮触发
 4. 在 LangGraph 图中集成 `retrieve_memory` 与 `store_memory` 节点：本会话记忆直接注入，跨会话记忆由 profile 承担
 5. 实现 `POST /api/consolidate` 端点的两级整合能力（请求体 `level` 区分 L2/L5）与前端按钮，手动、即时地触发整合并保证幂等
-6. 理解“直接注入历史”（方案 A）与“检索注入”（方案 B）的取舍，以及提取时对比历史窗口（recent_l1）从源头减少重复
+6. 理解“分层配额注入”为何是业界标杆做法——以 oh-my-pi（omp）为标杆对照本模块的三层设计，同时理解提取时对比历史窗口（recent_l1）从源头减少重复
 
 ## 模块结构
 
@@ -68,14 +68,33 @@ L5 整合 prompt 带画像维度指引（见 2.4）。
 > ⚠️ 阅读 TiMem 源码时注意：生产链路在 `timem/workflows/` 与 `services/session_memory_scanner.py`；
 > `timem/memory/l1~l5_*.py` 是早期带 MockLLM 的实验 stub，仅作历史参考。
 
-### 记忆注入策略（方案 A：直接注入）
+### 记忆注入策略（分层注入，以 omp 为标杆）
 
-| 维度 | 方案 A（本模块采用） | 方案 B（检索注入） |
-|------|-------------------|------------------------|
-| 原理 | profile（全局 1 条）+ 本会话最近 N 条记忆注入 | 按相关性评分，只注入相关的 |
-| 优点 | 简单、零评分噪声、LLM 看到完整背景 | 上下文可控 |
-| 缺点 | 记忆多了上下文膨胀 | 评分逻辑有误判风险 |
-| 适用 | 记忆量少（教学 Demo） | 记忆量多（长期真实使用） |
+本模块以 TiMeM 论文为**参考**——三层结构（提取→整合→画像）的出处；工程上的**标杆**是
+oh-my-pi（omp）：它的记忆子系统验证了同样的结构在生产级 agent 里怎么落地。注入方式是
+**配额制**：profile（全局唯一 1 条）+ 本会话 L1/L2 最近 N 条（≤20），按固定预算注入上下文。
+
+**标杆对照（omp ↔ 本模块）**：
+
+| omp 的实现（`packages/coding-agent/src/memories/`） | 本模块的对应 |
+|---|---|
+| Phase 1：启动时逐会话提取事实 | `extract_l1`（每轮对话提取） |
+| Phase 2：跨会话整合为 `MEMORY.md` + `memory_summary.md` | `consolidate_l2` / `consolidate_profile`（整合为 L2/L5） |
+| 会话开始作为 Memory Guidance 块注入 system prompt | `retrieve_memory` 节点注入 SystemMessage |
+| 零向量依赖（向量仅可选 mnemopi 插件后端） | 零向量依赖（配额注入） |
+
+同样的模式在其他一线 agent 中一致出现，说明这是通行做法而非本模块的简化：
+
+| 工具 | 长期记忆机制 | 记忆召回方式 |
+|---|---|---|
+| **hermes-agent** | `MEMORY.md`（agent 自记事实）+ `USER.md`（用户画像）纯文本文件，冻结快照注入 system prompt（`tools/memory_tool.py`） | SQLite FTS5 全文检索（`tools/session_search_tool.py`） |
+| OpenAI Codex CLI | `AGENTS.md` 逐层拼接注入（`codex-rs/core/src/agents_md.rs`） | ripgrep 字面量搜索（`codex-rs/rollout/src/search.rs`） |
+| Claude Code | `CLAUDE.md` 四级层级 + auto memory，`MEMORY.md` 索引前 200 行启动注入 | 模型自行读取 markdown 文件 |
+| Cline / Gemini CLI | `.clinerules` / `GEMINI.md` 文件注入 | 文件按需读取 / MemTool 写回 |
+
+与它们相比，TiMeM 的双通道检索（语义向量 ×0.9 + BM25 ×0.1，Qdrant）属于**记忆产品**
+在海量记忆长期个性化场景下的路线——hermes 的 `USER.md` 与本模块的 L5 profile 同构，
+印证“用户画像”这一层是 agent 与记忆产品的公共结构。
 
 **跨会话记忆由 profile 承担**：`get_memories_for_context(session_id)` 只取两类记忆——
 全局唯一的 L5 画像 + 该会话的 L1/L2（时间倒序，≤20 条）。开新会话时，Agent 带着画像记忆一切重点，
@@ -194,7 +213,7 @@ def extract_l1(dialogue: dict, session_id: str, recent_l1: list[Memory] = []) ->
 ```
 
 **逐段讲解：**
-- **`recent_l1` 历史窗口（本版新增）**：把该会话最近的 L1 记忆拼进 prompt（`recent_block`），让 LLM **对比后跳过重复**——论文 3.2 的 Historical Memories（w=3 滑动窗口）。用户重复表达同一事实时，只有第一遍被存下来。**去重在提取时就做，而不是存完再清理**——记忆量少时直接注入全部历史（方案 A），重复数据会占据上下文，去重更关键。
+- **`recent_l1` 历史窗口（本版新增）**：把该会话最近的 L1 记忆拼进 prompt（`recent_block`），让 LLM **对比后跳过重复**——论文 3.2 的 Historical Memories（w=3 滑动窗口）。用户重复表达同一事实时，只有第一遍被存下来。**去重在提取时就做，而不是存完再清理**——记忆量少时直接注入全部历史，重复数据会占据上下文，去重更关键。
   去重依赖 LLM 遵守“跳过已有记忆”的指令，属于软约束而非硬保证——TiMem 生产实现同样只靠 prompt 指令（“Do not repeat any content from historical memories”，`prompts.yaml:8,11`），零算法去重。
 - **范围扩展（本版新增）**：原版只提“关于用户的事实（偏好、研究方向、背景、决策）”，漏掉“用户关注了什么”和“对话中的领域知识”。扩展后，一轮“这论文怎么分类的？”能提取出 `"用户关注KSSE谱嵌入"`、`"KSSE用QC-LDPC稀疏图做谱嵌入"`——**第 3 类（关注话题，允许从问题推断）是最大改进**，原版这类一轮提取不出任何东西。
   这一 6 类范围是教学版对 TiMem 的有意偏离：TiMem 的 L1 prompt（`config/prompts.yaml:3-28`）本身无分类体系，分类提炼发生在 L3（四类，`prompts.yaml:60-64`）。省略 L3/L4 后，画像分类的素材需要在 L1 就带方向性，L5 整合才能产出有结构的画像。
@@ -325,12 +344,12 @@ memories_collection.update_one(
 
 ### 2.6 记忆注入：`get_memories_for_context(session_id)`
 
-方案 A 的落地：全局画像 + 本会话最近 N 条，两类一起返回。
+分层注入的落地：全局画像 + 本会话最近 N 条，两类一起返回。
 
 ```python
 # 教学示例：展示核心逻辑，非完整实现
 def get_memories_for_context(session_id: str, limit: int = 20) -> list[Memory]:
-    """取全局画像 + 该会话最近 N 条记忆（L1+L2），按时间倒序，评分留待方案 B。
+    """取全局画像 + 该会话最近 N 条记忆（L1+L2），按时间倒序，配额注入，业界同构。
 
     profile 在前（全局唯一一条）；本会话记忆按时间倒序取最近 limit 条。
     跨会话记忆由 profile 承担：其他会话的 L1/L2 留在库中，作为下次整合画像的素材。
@@ -431,7 +450,7 @@ __start__ → retrieve_memory → [ llm_call ⇄ tool_node ] → store_memory �
 
 ```python
 def retrieve_memory(state):
-    """注入全局画像 + 本会话历史记忆，相关度检索留待方案 B。"""
+    """注入全局画像 + 本会话历史记忆，配额注入，业界同构。"""
     memories = get_memories_for_context(state["session_id"])
     profiles = [m for m in memories if m.level == "L5"]
     session_mems = [m for m in memories if m.level != "L5"]
