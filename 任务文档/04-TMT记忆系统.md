@@ -598,9 +598,9 @@ cd backend && uv run pytest tests/test_memory.py -v
 
 **注入的历史记忆太多撑爆上下文？** `get_memories_for_context` 的 `limit`（默认 20）已限制；确需更多可调大，注意上下文窗口。
 
-- [ ] `memory/store.py` 实现 `Memory`、`extract_l1`（6 类 + recent_l1 去重）、`consolidate_l2`（守卫）、`consolidate_profile`、`save_memory/load_memories`、`upsert_l2`/`upsert_profile`、`get_memories_for_context`
-
 **多轮对话后 memories 集合文档数越来越多？** `extract_l1` 的 recent_l1 历史窗口让重复事实在提取时即被跳过；已被 L2 覆盖的旧 L1 可定期 `delete_many` 清理。
+
+**连续点击多次整合按钮会生成多条 L2 / L5 吗？** 只做增量更新。L2 按 `session_id` 幂等、L5 全局唯一，重复点击只更新已有条目。
 
 **L5 画像什么时候更新？** 每次点「整合画像」都用当前全部 L2 + 旧 L5 重新合成——新会话的信息在它的 L2 生成后，下次点按钮就会进入画像。
 
