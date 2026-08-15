@@ -63,7 +63,7 @@ TiMem 的 L5 整合只消费下一层的 `content` 字符串与最近 3 条历�
 
 代价：TiMem 原本在 L3/L4 prompt 里完成的"画像分类提炼"（L3 四类：关键事件 / 态度与偏好 / 决策过程 / 情绪变化，
 见 `config/prompts.yaml:55-60`）失去载体。教学版用两项补偿：L1 提取带 6 类范围指引（见第 2 步），
-L5 整合 prompt 带画像维度指引（见 2.3）。
+L5 整合 prompt 带画像维度指引（见 2.4）。
 
 > ⚠️ 阅读 TiMem 源码时注意：生产链路在 `timem/workflows/` 与 `services/session_memory_scanner.py`；
 > `timem/memory/l1~l5_*.py` 是早期带 MockLLM 的实验 stub，仅作历史参考。
@@ -351,3 +351,105 @@ def get_memories_for_context(session_id: str, limit: int = 20) -> list[Memory]:
 - **其他会话的记忆自然被过滤**：查询条件是 `session_id` 等值匹配，跨会话的记忆只有画像这一条通道进入上下文。
 
 **验证：** 会话 A 存 3 条 L1，会话 B 存 2 条 L1，库里存 1 条 L5。调用 `get_memories_for_context("A")`：返回 4 条（L5 在前 + A 的 3 条），B 的记忆不在其中。
+
+## 第 3 步：手动整合端点（`level` 区分两级）
+
+模块 2 §9.4 在 `api/routes.py` 预留的 `/api/consolidate` 占位（返回 `status="pending"`）在本模块转正。
+L2 与 L5 共用这一个端点——请求体的 `level` 字段区分（缺省 `"L2"`，模块 3 的按钮请求原样兼容），
+API 总数保持 4 个不变。
+
+### 3.1 schemas.py 增量扩展（api/schemas.py）
+
+```python
+class ConsolidateRequest(BaseModel):
+    """POST /api/consolidate 的请求体。"""
+    session_id: str         # 会话 ID（level="L5" 时仅作占位，画像整合与具体会话无关）
+    level: str = "L2"       # 整合级别："L2" 会话摘要 / "L5" 用户画像
+
+
+class ConsolidateResponse(BaseModel):
+    """POST /api/consolidate 的响应。"""
+    status: str             # 状态
+    l2_id: str = ""         # level="L2" 时为生成的 L2 记忆 ID，否则为空
+    profile_id: str = ""    # level="L5" 时为画像记忆 ID，否则为空
+```
+
+### 3.2 端点转正（api/routes.py，替换模块 2 的占位函数体）
+
+```python
+@router.post("/consolidate", response_model=ConsolidateResponse)
+async def consolidate(req: ConsolidateRequest):
+    """手动触发记忆整合：level="L2" 整合该会话，level="L5" 整合全局画像。"""
+    if req.level == "L5":
+        l2_memories = load_memories(level="L2")
+        if not l2_memories:
+            raise HTTPException(422, "还没有会话摘要，先整合至少一个会话")
+        previous = load_memories(level="L5")
+        profile = consolidate_profile(l2_memories, previous[0] if previous else None)
+        existing = memories_collection.find_one({"level": "L5"})
+        if existing is None:
+            profile_id = str(memories_collection.insert_one(asdict(profile)).inserted_id)
+        else:
+            memories_collection.update_one(
+                {"_id": existing["_id"]},
+                {"$set": {"content": profile.content, "timestamp": profile.timestamp}},
+            )
+            profile_id = str(existing["_id"])
+        return ConsolidateResponse(status="ok", profile_id=profile_id)
+
+    l1_memories = load_memories(session_id=req.session_id, level="L1")
+    if not l1_memories:
+        raise HTTPException(422, "该会话没有 L1 记忆，先对话几轮再整合")
+    l2 = consolidate_l2(l1_memories)
+    existing = memories_collection.find_one({"session_id": req.session_id, "level": "L2"})
+    if existing is None:
+        l2_id = str(memories_collection.insert_one(asdict(l2)).inserted_id)
+    else:
+        memories_collection.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"content": l2.content, "timestamp": l2.timestamp}},
+        )
+        l2_id = str(existing["_id"])
+    return ConsolidateResponse(status="ok", l2_id=l2_id)
+```
+
+**逐段讲解：**
+- **`level` 分流**：`"L5"` 走画像分支（输入是跨会话全部 L2 + 现有 L5，幂等键 `level="L5"` 全局一条）；
+  其余走 L2 分支（输入是 `req.session_id` 的全部 L1，幂等键 `session_id + level`，每会话一条）。
+- **幂等检查**：`find_one` 先查已有记录，无则 `insert_one` 新建、有则 `update_one` 增量更新——重复点击按钮只更新。
+- **`l2_id`/`profile_id` 返回 MongoDB `_id`**：文档主键全局唯一，比时间戳可靠（同一秒内两次整合会撞车）。
+- **空输入守卫**：两个分支各自在整合前检查输入为空 → 422，前端据此提示"先对话/先整合会话"。
+
+## 第 4 步：集成到 Agent 图
+
+```
+__start__ → retrieve_memory → [ llm_call ⇄ tool_node ] → store_memory → __end__
+```
+
+- **retrieve_memory 节点**（循环开始前）：调用 `get_memories_for_context(state["session_id"])`，
+  profile 与本会话记忆分两段格式化为 SystemMessage：
+
+```python
+def retrieve_memory(state):
+    """注入全局画像 + 本会话历史记忆，相关度检索留待方案 B。"""
+    memories = get_memories_for_context(state["session_id"])
+    profiles = [m for m in memories if m.level == "L5"]
+    session_mems = [m for m in memories if m.level != "L5"]
+    if not profiles and not session_mems:
+        return {"messages": []}
+    sections = []
+    if profiles:
+        sections.append("用户画像（跨会话长期记忆）：\n" + "\n".join(f"- {m.content}" for m in profiles))
+    if session_mems:
+        sections.append("本会话历史记忆：\n" + "\n".join(f"- [{m.level}] {m.content}" for m in session_mems))
+    memory_msg = SystemMessage(
+        content="以下是记忆背景，回答时作为参考：\n\n" + "\n\n".join(sections)
+    )
+    return {"messages": [memory_msg]}
+```
+
+- **store_memory 节点**（循环结束后）：把本轮对话传给 `extract_l1(dialogue, session_id, recent_l1)` 提取原子事实存入 MongoDB。**注意**：`recent_l1` 用 `load_memories(session_id, level="L1")` 取最近几条传入，让历史去重在每轮提取时生效。此节点只产生副作用（写库），返回 `{"messages": []}`。
+
+模块 2 的 `MessagesState` 需扩展：`class MemoryState(MessagesState): session_id: str`。`api/schemas.py` 的 `QueryRequest` 加 `session_id: str = "default"`，`/api/query` 端点把 session_id 传进 graph 的初始 state。
+
+**验证：** 会话 A 连续两轮提问（第二轮应看到第一轮的 L1 注入）；点「新会话」后提问「我是做什么的」——若已点过「整合画像」，Agent 应能基于 profile 回答。
