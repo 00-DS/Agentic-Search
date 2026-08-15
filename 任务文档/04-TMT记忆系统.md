@@ -354,7 +354,7 @@ def get_memories_for_context(session_id: str, limit: int = 20) -> list[Memory]:
 
 ## 第 3 步：手动整合端点（`level` 区分两级）
 
-模块 2 §9.4 在 `api/routes.py` 预留的 `/api/consolidate` 占位（返回 `status="pending"`）在本模块转正。
+模块 2 §8.4 在 `api/routes.py` 预留的 `/api/consolidate` 占位（返回 `status="pending"`）在本模块转正。
 L2 与 L5 共用这一个端点——请求体的 `level` 字段区分（缺省 `"L2"`，模块 3 的按钮请求原样兼容），
 API 总数保持 4 个不变。
 
