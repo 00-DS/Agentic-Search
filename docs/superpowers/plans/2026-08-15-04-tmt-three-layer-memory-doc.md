@@ -587,6 +587,7 @@ async function consolidateProfile() {   // 「整合画像」（profile-btn，�
   alert(`画像更新完成（${profile_id}）`);
 }
 ```
+```
 
 - [ ] **Step 2: 追加“第 6 步：编写 tests/test_memory.py”**
 
