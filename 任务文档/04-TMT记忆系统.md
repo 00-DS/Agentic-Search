@@ -65,8 +65,7 @@ TiMem 的 L5 整合只消费下一层的 `content` 字符串与最近 3 条历�
 见 `config/prompts.yaml:60-64`）失去载体。教学版用两项补偿：L1 提取带 6 类范围指引（见第 2 步），
 L5 整合 prompt 带画像维度指引（见 2.4）。
 
-> ⚠️ 阅读 TiMem 源码时注意：生产链路在 `timem/workflows/` 与 `services/session_memory_scanner.py`；
-> `timem/memory/l1~l5_*.py` 是早期带 MockLLM 的实验 stub，仅作历史参考。
+> ⚠️ 阅读 TiMem 源码时注意：生产链路在 TiMeM 仓库内部的 `timem/workflows/` 与 `services/session_memory_scanner.py`；仓库里的 `timem/memory/l1~l5_*.py` 是早期带 MockLLM 的实验 stub，仅作历史参考。（这些路径都属于外部 TiMeM 仓库，与本项目的 `backend/src/agentic_search/memory/` 无关。）
 
 ### 记忆注入策略（分层注入，以 omp 为标杆）
 
@@ -107,7 +106,7 @@ oh-my-pi（omp）：它的记忆子系统验证了同样的结构在生产级 ag
 |------|---------------|-----------|
 | L2 触发器 | `SessionMemoryScanner` 每 10 分钟扫描，会话 idle ≥10 分钟视为结束 | 前端「整合会话记忆」按钮 |
 | L5 触发器 | 跨月检测自动回填（`core/catchup_detector.py`） | 前端「整合画像」按钮 |
-| 实现位置 | `services/session_memory_scanner.py`、`timem/workflows/` | `api/routes.py` 同一 /api/consolidate 端点（level 区分） |
+| 实现位置 | `services/session_memory_scanner.py`、`timem/workflows/`（均为 TiMeM 仓库内部路径） | `api/routes.py` 同一 /api/consolidate 端点（level 区分） |
 | 目的 | 生产自动化 | 教学即时可观察 |
 
 > 💡 **幂等性**：同一会话最多一条 L2（按 `session_id` 定位，有则更新）；全局最多一条 L5（按 `level` 定位，有则更新）。重复点击按钮只会增量更新。
@@ -623,7 +622,6 @@ cd backend && uv run pytest tests/test_memory.py -v
 
 ## 延伸阅读
 
-- **TiMem 论文与源码**：https://github.com/TiMEM-AI/TiMEM （ACL 2026 Findings, arXiv:2601.02845）。读源码认准生产链路：`timem/workflows/` 与 `services/session_memory_scanner.py`；`timem/memory/l1~l5_*.py` 是早期实验 stub，仅作历史参考。
-- **LangGraph 官方文档**：https://langgraph.com.cn/
+- **TiMem 论文与源码**：https://github.com/TiMEM-AI/TiMEM （ACL 2026 Findings, arXiv:2601.02845）。读源码认准生产链路（均为 TiMeM 仓库内部路径）：`timem/workflows/` 与 `services/session_memory_scanner.py`；`timem/memory/l1~l5_*.py` 是早期实验 stub，仅作历史参考。
 - **Python dataclasses**：https://docs.python.org/zh-cn/3/library/dataclasses.html
 - **PyMongo 官方教程**：https://www.mongodb.com/zh-cn/docs/languages/python/pymongo-driver/current/

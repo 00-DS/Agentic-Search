@@ -58,7 +58,7 @@ parse_pdf()              └── agentic_search/
 
 ### MongoDB 与 PyMongo
 
-本项目用 `agentic_search` 数据库下的 `documents` 集合存放论文（每篇存为完整纯文本），`memories` 集合存放 L1/L2 记忆。
+本项目用 `agentic_search` 数据库下的 `documents` 集合存放论文（每篇存为完整纯文本），`memories` 集合存放 L1/L2/L5 记忆。
 
 用 MongoDB 集中存储有三点优势：第一，**原子性与一致性**——数据库的写入是原子的，不会出现「写了一半」的损坏文件；第二，**按条件查询**——可以用 `doc_id`、`filename` 等字段精确检索；第三，**可视化**——用 MongoDB Compass 可以直观地浏览、搜索数据，便于教学调试。
 
@@ -169,7 +169,7 @@ agentic-search/
         └── test_documents.py       # 本模块创建：pytest 测试
 ```
 
-> PDF 经 pymupdf 提取的完整文本，以及 L1/L2 记忆，全部存入 MongoDB（`agentic_search` 数据库，`localhost:27017`）。学生可用 **MongoDB Compass** 可视化查看数据库状态。安装 MongoDB Community Server 与 Compass 的步骤见[开始之前](./00-开始指南.md)。
+> PDF 经 pymupdf 提取的完整文本，以及 L1/L2/L5 记忆，全部存入 MongoDB（`agentic_search` 数据库，`localhost:27017`）。学生可用 **MongoDB Compass** 可视化查看数据库状态。安装 MongoDB Community Server 与 Compass 的步骤见[开始之前](./00-开始指南.md)。
 
 其余文件（`main.py`、`api/routes.py`、`agents/graph.py`、`memory/store.py`）分别由[模块 2](./02-LangGraph-Agent.md) 与[模块 4](./04-TMT记忆系统.md) 创建。本模块只搭建地基。
 
@@ -291,7 +291,7 @@ uv run python -c "import pymupdf; from pydantic_settings import BaseSettings; im
 
 在代码里写死 LLM 模型名（`"deepseek-v4-flash"`）或 MongoDB 连接地址（`"mongodb://localhost:27017"`）是常见的坏习惯。一旦这些值需要变动——比如换用另一个模型、把数据库迁移到远程服务器——就得翻遍代码逐处修改，极易遗漏。配置层的职责是把这些「会变、但不属于业务逻辑」的值集中到一处（`.env` 文件 + 配置对象），业务代码只引用配置对象、不接触具体值。
 
-本项目的配置项包括：LLM 模型名、MongoDB 连接地址与数据库名。其中 LLM 相关项在本模块先定义、由[模块 2](./02-LangGraph-Agent.md) 的 Agent 实际使用；MongoDB 配置则被本模块的文档服务（存取论文纯文本）与[模块 4](./04-TMT记忆系统.md) 的记忆系统（存取 L1/L2 记忆）共同消费。
+本项目的配置项包括：LLM 模型名、MongoDB 连接地址与数据库名。其中 LLM 相关项在本模块先定义、由[模块 2](./02-LangGraph-Agent.md) 的 Agent 实际使用；MongoDB 配置则被本模块的文档服务（存取论文纯文本）与[模块 4](./04-TMT记忆系统.md) 的记忆系统（存取 L1/L2/L5 记忆）共同消费。
 
 ### 2.1 创建 `.env.example` 配置模板
 
@@ -654,7 +654,7 @@ def extract_abstract(doc_id: str) -> str:
 | `search_paper` | `(pattern, doc_id) -> list[dict]` | 正则命中的 `doc_id`+`line_number`+`line`（`doc_id` 必填） | `grep` |
 | `extract_abstract` | `(doc_id) -> str` | Abstract 段落（或未找到提示） | `summarizeCode()` |
 
-**为什么 `search_paper` 用正则、不用 embedding？** 这是对齐 omp `grep` 的核心决策。embedding/向量库会引入额外依赖、上传时做向量入库、让搜索结果不可解释。正则命中是人能读懂的精确匹配，智能来自 LLM 自主迭代构造正则——**正则匹配、零额外依赖、结果可解释**。
+**为什么 `search_paper` 选择正则匹配？** 这是对齐 omp `grep` 的核心决策。embedding/向量库会引入额外依赖、上传时做向量入库、让搜索结果不可解释。正则命中是人能读懂的精确匹配，智能来自 LLM 自主迭代构造正则——**正则匹配、零额外依赖、结果可解释**。
 
 **为什么 `extract_abstract` 是工具、不是上传预处理？** 对齐 omp 的 `summarizeCode()`：它是**读取时的可选便利**，agent 按需调用，不是入库步骤。上传时只做格式转换（PDF → 纯文本），不做任何内容分析。
 

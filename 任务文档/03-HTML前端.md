@@ -138,7 +138,7 @@ JavaScript 拿到的「元素对象」本质就是这些 DOM 节点——对它�
 |------|------|-----------|
 | `id` | 元素唯一标识，全文档不可重复 | `document.getElementById("upload-btn")` 靠它取元素 |
 | `class` | 元素分类标记，可重复、可多个（空格分隔） | 给消息气泡区分 `user` / `assistant` |
-| `style` | 行内 CSS 样式 | 本项目不用 |
+| `style` | 行内 CSS 样式 | 样式统一写在样式表，行内留给临时调试 |
 | `title` | 鼠标悬停时的提示文字 | — |
 | `data-*` | 自定义数据属性，存任意业务数据 | — |
 | `hidden` | 布尔属性，隐藏元素 | — |
@@ -934,7 +934,7 @@ queryForm.addEventListener("submit", (e) => {
 
 原因是手动设置了 `Content-Type: multipart/form-data`。删除该设置，让 `fetch` 传 `FormData` 时自动生成 boundary。
 
-### Q：如何不用后端单独预览前端
+### Q：如何脱离后端单独预览前端
 
 执行 `cd frontend && python -m http.server 3000`，然后访问 `http://localhost:3000`。这只是托管静态文件，真正的数据交互仍需后端在 `localhost:8000` 运行。
 
@@ -942,7 +942,7 @@ queryForm.addEventListener("submit", (e) => {
 
 ## 下一步
 
-前端完成。接下来学习记忆系统——理解 L1/L2 两层记忆如何让 Agent 跨会话记住你的研究方向：
+前端完成。接下来学习记忆系统——理解 L1/L2/L5 三层记忆如何让 Agent 跨会话记住你的研究方向：
 
 → [模块 4：TMT 记忆系统](./04-TMT记忆系统.md)
 

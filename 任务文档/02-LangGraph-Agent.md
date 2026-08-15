@@ -117,7 +117,7 @@ graph LR
 三个逼出 agentic 行为的设计约束：
 
 1. **没有「读整篇论文」的工具**。agent 必须先 `search_paper` 定位行号、再 `read_paper` 按行号取片段——这是「按需取片段」的强约束，既逼出真正的多轮探索，也是多论文场景下不撑爆上下文窗口的根本保障。
-2. `**search_paper` 用正则、不用 embedding**。对齐 omp `grep`：参数是正则 `pattern`（不是语义 query），返回命中行+行号。智能来自 LLM 自主迭代构造正则。**不用向量库、不做 embedding。**
+2. `**search_paper` 走正则匹配路线而非 embedding**。对齐 omp `grep`：参数是正则 `pattern`（而非语义 query），返回命中行+行号。智能来自 LLM 自主迭代构造正则。**纯字符串匹配，零向量库依赖。**
 3. `**extract_abstract` 是读取时工具，不是上传预处理**。对齐 omp 的 `summarizeCode()`：agent 按需调用，从完整文本里正则提取 abstract 段落。不在上传时预计算。
 
 ---
@@ -145,7 +145,7 @@ backend/src/agentic_search/
 │   └── graph.py         # 本模块创建：ReAct agent 图
 ├── memory/
 │   ├── __init__.py
-│   └── store.py         # 模块 4 实现：L1/L2 记忆
+│   └── store.py         # 模块 4 实现：L1/L2/L5 记忆
 └── services/
     ├── __init__.py
     └── documents.py     # 模块 1 已实现：parse_pdf / list_docs
@@ -153,7 +153,7 @@ backend/src/agentic_search/
 
 **设计说明——为什么要"包化"？**
 
-包化（package layout）把代码组织成 `agentic_search/` 这样的命名空间包，通过 `pyproject.toml` 的可编辑安装注册到 Python 环境。注册后无论从哪个目录运行，都能用绝对导入 `from agentic_search.agents.graph import build_graph`——不折腾 `PYTHONPATH`、不用 `sys.path` 黑魔法。这是工业化项目与「脚本堆砌」的根本区别。
+包化（package layout）把代码组织成 `agentic_search/` 这样的命名空间包，通过 `pyproject.toml` 的可编辑安装注册到 Python 环境。注册后无论从哪个目录运行，都能用绝对导入 `from agentic_search.agents.graph import build_graph`——全程零 `PYTHONPATH` 配置、零 `sys.path` 手工注入。这是工业化项目与「脚本堆砌」的根本区别。
 
 ### 1.2 安装依赖
 
@@ -753,7 +753,7 @@ uv run uvicorn agentic_search.main:app --reload --port 8000
 
 **验证——启动后用 Python 测试**：
 
-> **为什么不用 curl？** 在 PowerShell 里用 curl 有三个叠加的坑（`curl` 是别名、续行符不同、JSON body + 中文编码冲突）。用 `uv run python -c '...'` 直接走 httpx——同一个终端、同一个虚拟环境，引号和编码交给 Python 处理，干净利落。
+> **为什么验证选 Python httpx？** 在 PowerShell 里用 curl 有三个叠加的坑（`curl` 是别名、续行符不同、JSON body + 中文编码冲突）。`uv run python -c '...'` 直接走 httpx——同一个终端、同一个虚拟环境，引号和编码交给 Python 处理，干净利落。
 
 ```bash
 # ① 列出文档（启动后应能访问，即使列表为空）
