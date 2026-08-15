@@ -12,7 +12,7 @@
 - 零向量依赖表述：涉及"无 embedding"处用肯定式（如"零向量依赖""纯文本注入"），全文禁用否定措辞（"不使用/不采用/不用"，含无空格"不用"）。
 - 业界对照表必须含 oh-my-pi 与 hermes-agent 两行，引用格式为"仓库名 + 文件路径"（如 `packages/coding-agent/src/memories/`）。
 - 函数签名、代码块、端点契约一律保持原样（本计划只动叙事文字与表格）。
-- 每个 Task 结束 commit，消息前缀 `docs(04):`。
+- **命名规范对齐（与 documents.py / AGENTS.md 同一规范）**：service 层集合成员私有化——`memories_collection` 全文改为 `_memories_collection`（对齐 `_documents_collection`）；端点零 Mongo 集合引用——幂等 find/update 逻辑封装为 store.py 函数 `upsert_l2(l2: Memory) -> str` 与 `upsert_profile(profile: Memory) -> str`（内部 find_one + insert_one/update_one，返回 `_id` 字符串），端点只调它们。动词命名沿用项目惯例（verb + 名词：`save_memory`/`load_memories`/`upsert_l2`/`upsert_profile`）。
 - 中文排版用弯引号，与全文一致。
 
 ---
@@ -141,4 +141,119 @@ Expected: 无输出（零代码改动）。
 ```bash
 git add "任务文档/04-TMT记忆系统.md"
 git commit -m "docs(04): FAQ 双路径反转（agent 路线优先）+ 差异表补检索行"
+```
+---
+
+### Task 3: 命名规范对齐——集合私有化 + 幂等逻辑下沉 store.py
+
+**Files:**
+- Modify: `任务文档/04-TMT记忆系统.md`（§2.5 连接初始化、§2.6 注入小节顺延、§3 端点代码、完成检查、散落的 `memories_collection` 提法）
+
+**Interfaces:**
+- Consumes: Task 1/2 的叙事；现有 `save_memory`/`load_memories`/`Memory`/`asdict`。
+- Produces: `upsert_l2(l2: Memory) -> str`、`upsert_profile(profile: Memory) -> str`（端点教学示例引用）；`_memories_collection` 私有名（store.py 内部专用）。
+
+- [ ] **Step 1: §2.5.1 连接初始化私有化（对齐 documents.py 风格）**
+
+原（约 L286-289）：
+```python
+client = MongoClient(settings.mongo_url)
+db = client[settings.mongo_db]
+memories_collection = db["memories"]
+```
+改为：
+```python
+_client = MongoClient(settings.mongo_url)
+_db = _client[settings.mongo_db]
+_memories_collection = _db["memories"]   # 私有成员：仅 store.py 内部使用，端点/工具层零引用
+```
+并在逐段讲解加一条：
+```markdown
+- **下划线私有**：`_memories_collection` 与 `services/documents.py` 的 `_documents_collection` 同一规范——集合句柄是 service 层的实现细节，API 层与 agent 工具层只调 service 函数，从不直接碰集合。
+```
+同时更新 §2.5 内其余引用（`save_memory`/`load_memories`/`update_one` 示例中的 `memories_collection.` → `_memories_collection.`）；`update_one` 小节（2.5.4）补一句说明：该示例展示原子操作本身，实际幂等更新由 `upsert_l2`/`upsert_profile` 封装（见 2.6）。
+
+- [ ] **Step 2: store.py 新增 upsert 小节（插入为 §2.6，原"记忆注入"小节顺延为 §2.7，全文引用同步改号）**
+
+````markdown
+### 2.6 幂等写入：`upsert_l2(l2)` 与 `upsert_profile(profile)`
+
+端点需要的“有则更新、无则新建”逻辑封装在 service 层，返回落库文档的 `_id` 字符串：
+
+```python
+# 教学示例：展示核心流程，非完整实现
+def upsert_l2(l2: Memory) -> str:
+    """按 (session_id, level="L2") 幂等写入 L2：已有则更新 content/timestamp，返回 _id。"""
+    existing = _memories_collection.find_one(
+        {"session_id": l2.session_id, "level": "L2"}
+    )
+    if existing is None:
+        return str(_memories_collection.insert_one(asdict(l2)).inserted_id)
+    _memories_collection.update_one(
+        {"_id": existing["_id"]},
+        {"$set": {"content": l2.content, "timestamp": l2.timestamp}},
+    )
+    return str(existing["_id"])
+
+
+def upsert_profile(profile: Memory) -> str:
+    """按 level="L5" 全局幂等写入画像：已有则更新 content/timestamp，返回 _id。"""
+    existing = _memories_collection.find_one({"level": "L5"})
+    if existing is None:
+        return str(_memories_collection.insert_one(asdict(profile)).inserted_id)
+    _memories_collection.update_one(
+        {"_id": existing["_id"]},
+        {"$set": {"content": profile.content, "timestamp": profile.timestamp}},
+    )
+    return str(existing["_id"])
+```
+
+**逐段讲解：**
+- 与 `services/documents.py` 的分层一致：MongoDB 访问全部收在 service 层函数里，`api/routes.py` 只调用函数。
+- 两个函数只差幂等键（`session_id + level` vs 全局 `level`），对应 L2 每会话一条、L5 全局一条的定位。
+- §2 开头的 import 清单同步加 `upsert_l2, upsert_profile`。
+````
+
+- [ ] **Step 3: §3 端点代码改为纯 service 调用**
+
+原 L5 分支（约 L383-397）替换为：
+```python
+    if req.level == "L5":
+        l2_memories = load_memories(level="L2")
+        if not l2_memories:
+            raise HTTPException(422, "还没有会话摘要，先整合至少一个会话")
+        previous = load_memories(level="L5")
+        profile = consolidate_profile(l2_memories, previous[0] if previous else None)
+        profile_id = upsert_profile(profile)
+        return ConsolidateResponse(status="ok", profile_id=profile_id)
+```
+原 L2 分支（约 L400-412）替换为：
+```python
+    l1_memories = load_memories(session_id=req.session_id, level="L1")
+    if not l1_memories:
+        raise HTTPException(422, "该会话没有 L1 记忆，先对话几轮再整合")
+    l2 = consolidate_l2(l1_memories)
+    l2_id = upsert_l2(l2)
+    return ConsolidateResponse(status="ok", l2_id=l2_id)
+```
+删除端点代码顶部的 `memories_collection` import；逐段讲解同步：把“幂等检查”条改为“幂等由 service 层 `upsert_l2`/`upsert_profile` 保证——端点只组数据、调函数、返结果，与模块 2 的分层铁律一致”。
+
+- [ ] **Step 4: 散落引用清理与检查表同步**
+
+`grep -n "memories_collection" 任务文档/04-TMT记忆系统.md` 逐处核对：命中必须全部带下划线前缀且都在 store.py 代码块/讲解内；端点/前端/测试章节零出现。完成检查第 1 条（约 L540）补上 `upsert_l2`/`upsert_profile`。
+
+- [ ] **Step 5: 验证**
+
+Run: `grep -n "[^_]memories_collection" "任务文档/04-TMT记忆系统.md"`
+Expected: 无输出（无下划线前缀版本零出现）。
+Run: `grep -c "upsert_l2\|upsert_profile" "任务文档/04-TMT记忆系统.md"`
+Expected: ≥6（定义 2 + import 1 + 端点 2 + 完成检查 1）。
+Run: `grep -n "方案 A\|方案 B\|不使用\|不采用\|不用" "任务文档/04-TMT记忆系统.md"`
+Expected: 无输出。
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add "任务文档/04-TMT记忆系统.md"
+git commit -m "docs(04): 命名规范对齐——_memories_collection 私有化 + 幂等下沉 upsert_l2/upsert_profile"
 ```
