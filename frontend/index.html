@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Agentic Search with Memory</title>
+</head>
+
+<body>
+    <hr><!-- 分隔线标签 -->
+    <div>
+        <input type="file" id="file-input" accept=".pdf">
+        <button id="upload-btn">上传 PDF</button>
+        <br><!-- 换行标签 -->
+        <button id="consolidate-btn">整合会话记忆（L2）</button>
+    </div>
+
+    <hr>
+    <div id="messages"><!-- JS 动态插入对话气泡 --></div>
+
+    <hr>
+    <form id="query-form">
+        <input type="text" id="question" placeholder="问一个问题...">
+        <button type="submit">发送</button>
+    </form>
+
+    <hr>
+    <div id="documents"></div>
+    <hr>
+    
+    <script src="app.js"></script>
+</body>
+
+</html>
