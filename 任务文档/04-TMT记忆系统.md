@@ -22,7 +22,7 @@ graph LR
         Dialog["每轮对话"] --> Extract["extract_l1<br/>提取原子事实"]
     end
     Extract --> Store[("MongoDB memories 集合")]
-    subgraph L2["L2 整合 · 按钮触发"]
+    subgraph L2["L2 整合 · 阈值自动 + 按钮兜底"]
         Consolidate["consolidate_l2<br/>生成会话摘要"]
     end
     subgraph L5["L5 整合 · 按钮触发"]
@@ -31,6 +31,7 @@ graph LR
     ButtonA["整合会话记忆按钮"] -.->|"POST /api/consolidate<br/>level=L2"| Consolidate
     ButtonB["整合画像按钮"] -.->|"POST /api/consolidate<br/>level=L5"| Profile
     Extract -.->|"作为输入"| Consolidate
+    Store -.->|"新增 L1 ≥ 阈值自动触发"| Consolidate
     Consolidate -.->|"全部 L2 作为输入"| Profile
     Consolidate --> Store
     Profile --> Store
@@ -48,7 +49,7 @@ TiMem 论文（ACL 2026 Findings, arXiv:2601.02845）提出 TMT（Temporal Memor
 | 论文层级 | 内容 | 本模块 | 触发 |
 |---|---|---|---|
 | L1 Segment | 对话片段的原子事实 | ✅ 每轮对话提取 | 每轮自动 |
-| L2 Session | 会话主题摘要 | ✅ 会话全部 L1 → 1 条 | 按钮手动 |
+| L2 Session | 会话主题摘要 | ✅ 会话全部 L1 → 1 条 | 阈值自动 + 按钮兜底 |
 | L3 Daily | 每日模式提炼 | 参考概念 | — |
 | L4 Weekly | 每周趋势 | 参考概念 | — |
 | L5 Profile | 稳定用户画像 | ✅ 全部 L2 + 旧画像 → 1 条 | 按钮手动 |
