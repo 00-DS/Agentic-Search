@@ -156,7 +156,7 @@ from datetime import datetime, timezone
 from agentic_search.services.llm import call_llm
 ```
 
-各函数直接用 `datetime.now(timezone.utc).isoformat()` 生成时间戳（统一 UTC——ISO 8601 字符串按字典序排列即按时间排列，`sort("timestamp", -1)` 才能正确取最近记忆）。
+各函数直接用 `datetime.now(timezone.utc).isoformat()` 生成时间戳。存字符串而非 datetime 对象：`Memory` 四字段全为 `str` 保持类型一致与 JSON 可序列化；BSON Date 读回是无时区的毫秒精度 datetime（时区信息丢失），ISO 字符串存什么读回什么；且 ISO 8601 字符串按字典序排列即按时间排列，`sort("timestamp", -1)` 正确取最近记忆。
 
 
 ### 2.1 数据结构：Memory dataclass
