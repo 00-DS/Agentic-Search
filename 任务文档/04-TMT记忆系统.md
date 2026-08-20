@@ -55,17 +55,7 @@ TiMem 论文（ACL 2026 Findings, arXiv:2601.02845）提出 TMT（Temporal Memor
 
 存储采用 MongoDB（`agentic_search` 数据库的 `memories` 集合），PyMongo 同步驱动。
 
-### 为什么 L2 可以直接喂 L5（源码证据）
-
-TiMem 的 L5 整合只消费下一层的 `content` 字符串与最近 3 条历史 L5，对下层是 Daily 还是 Weekly 并无结构依赖——
-`workflows/nodes/unified_processors.py:810` 在缺少 L4 时会回退用 L3 生成 L5，说明“给一批摘要文本 + 历史画像”
-就是 L5 的全部输入约定。因此教学版让 L2 直接作为 L5 的输入，机制上与生产实现同构。
-
-代价：TiMem 原本在 L3/L4 prompt 里完成的“画像分类提炼”（L3 四类：关键事件 / 态度与偏好 / 决策过程 / 情绪变化，
-见 `config/prompts.yaml:60-64`）失去载体。教学版用两项补偿：L1 提取带 6 类范围指引（见第 2 步），
-L5 整合 prompt 带画像维度指引（见 2.4）。
-
-> ⚠️ 阅读 TiMem 源码时注意：生产链路在 TiMeM 仓库内部的 `timem/workflows/` 与 `services/session_memory_scanner.py`；仓库里的 `timem/memory/l1~l5_*.py` 是早期带 MockLLM 的实验 stub，仅作历史参考。（这些路径都属于外部 TiMeM 仓库，与本项目的 `backend/src/agentic_search/memory/` 无关。）
+L5 的输入只有两样：下一层级的摘要文本与现有画像——TiMem 在缺少 L4 时会回退用 L3 的摘要生成 L5，说明摘要来自哪一层并不影响整合方式。因此本模块让 L2 直接作为 L5 的输入；省略 L3/L4 后，原本由它们完成的分类提炼，由 L1 提取的 6 类指引与 L5 整合的画像维度指引共同承担（见第 2 步）。
 
 ### 记忆注入策略（分层注入，以 omp 为标杆）
 
@@ -82,7 +72,7 @@ oh-my-pi（omp）：它的记忆子系统验证了同样的结构在生产级 ag
 | 会话开始作为 Memory Guidance 块注入 system prompt | `retrieve_memory` 节点注入 SystemMessage |
 | 零向量依赖（向量仅可选 mnemopi 插件后端） | 零向量依赖（配额注入） |
 
-同样的模式在其他一线 agent 中一致出现，说明这是通行做法而非本模块的简化：
+同样的模式在其他一线 agent 中一致出现：
 
 | 工具 | 长期记忆机制 | 记忆召回方式 |
 |---|---|---|
@@ -144,7 +134,7 @@ class Memory:
 ```
 
 **字段含义逐项讲解：**
-- `level`：决定该条记忆在 TMT 树中的层级。跳号保留 L1/L2/L5：L3/L4 被省略这件事本身就是一个可讨论的设计决策（见“核心思路”的源码证据）。
+- `level`：记忆在 TMT 树中的层级，取 `"L1"`、`"L2"`、`"L5"`（L3/L4 与 L2 同构，本模块省略）。
 - `session_id`：L2 幂等的键——整合时按 `session_id + level` 查询是否已存在 L2，有则更新、无则新建。L5 的 `session_id=None` 表达“画像不属于任何会话”，幂等键只用 `level="L5"`。
 - `asdict()`：dataclass 自带的字典转换方法，`save_memory` 用它把对象转为 MongoDB document。
 
@@ -152,17 +142,17 @@ class Memory:
 
 **验证：** 创建 `Memory` 实例（含 `session_id=None` 的 L5），确认字段可赋值、`asdict()` 输出符合预期。
 
-### 2.2 L1 提取：`extract_l1(dialogue, session_id, recent_l1)`（范围扩展 + 历史去重）
+### 2.2 L1 提取：`extract_l1(history, session_id, recent_l1)`（历史去重）
 
-从一轮对话中提取原子事实，**提取范围比原版更广**，并对比历史窗口 `recent_l1` 跳过重复。
+从一轮对话中提取原子事实，并对比历史窗口 `recent_l1` 跳过重复事实。
 
-**Prompt 设计要点（本版扩展）：**
+**Prompt 设计要点：**
 - 角色：记忆提取器，从对话中提取原子事实
-- 输入：一轮对话（user message + assistant message）+ **已有记忆列表（recent_l1，用于去重）**
-- **提取范围（6 类，本版扩展）**：
+- 输入：一轮对话（user 与 agent 各一条消息）+ 已有记忆列表（recent_l1，用于去重）
+- **提取范围（6 类）**：
   1. **用户身份与背景**：身份、职业、研究方向
   2. **用户偏好与倾向**：喜欢、不喜欢、倾向
-  3. **用户关注的话题**：论文、方法、工具、概念——**允许从用户的问题推断**（原版漏掉的关键类）
+  3. **用户关注的话题**：论文、方法、工具、概念——**允许从用户的问题推断**
   4. **用户决策与计划**：决定用某方案、计划做某事
   5. **用户提供的关键信息**：环境、约束、事实陈述（如“我的 GPU 是 4090”）
   6. **对话确认的领域知识**：可复用的结论、概念（如“KSSE 用 QC-LDPC 图”）
@@ -170,13 +160,13 @@ class Memory:
 - 输出：JSON 数组，每条一个陈述句
 - **去重规则**：与已有记忆重复的事实跳过
 
-```
+```python
 # 教学示例：展示核心流程，非完整实现
 
-def extract_l1(dialogue: dict, session_id: str, recent_l1: list[Memory] = []) -> list[Memory]:
+def extract_l1(history: dict, session_id: str, recent_l1: list[Memory] = []) -> list[Memory]:
     """从一轮对话提取原子事实，对比历史窗口去重。
 
-    dialogue: {"user": "...", "assistant": "..."}
+    history: {"user": "...", "agent": "..."}
     recent_l1: 该会话最近 N 条 L1 记忆（历史窗口），用于跳过重复事实
     """
 
@@ -201,7 +191,7 @@ def extract_l1(dialogue: dict, session_id: str, recent_l1: list[Memory] = []) ->
 已有记忆（若本轮事实与以下已有记忆重复，跳过，不要重复输出）：
 {recent_block}
 
-对话：用户：{dialogue["user"]}  助手：{dialogue["assistant"]}
+对话：user：{history["user"]}  Agent：{history["agent"]}
 以 JSON 数组输出：["事实1", "事实2", ...]"""
     raw = call_llm(prompt)               # 调用 LLM，返回 JSON 字符串
     facts = json.loads(raw)              # 解析为字符串列表
@@ -212,12 +202,10 @@ def extract_l1(dialogue: dict, session_id: str, recent_l1: list[Memory] = []) ->
 ```
 
 **逐段讲解：**
-- **`recent_l1` 历史窗口（本版新增）**：把该会话最近的 L1 记忆拼进 prompt（`recent_block`），让 LLM **对比后跳过重复**——论文 3.2 的 Historical Memories（w=3 滑动窗口）。用户重复表达同一事实时，只有第一遍被存下来。**去重在提取时就做，而不是存完再清理**——记忆量少时直接注入全部历史，重复数据会占据上下文，去重更关键。
-  去重依赖 LLM 遵守“跳过已有记忆”的指令，属于软约束而非硬保证——TiMem 生产实现同样只靠 prompt 指令（“Do not repeat any content from historical memories”，`prompts.yaml:8,11`），零算法去重。
-- **范围扩展（本版新增）**：原版只提“关于用户的事实（偏好、研究方向、背景、决策）”，漏掉“用户关注了什么”和“对话中的领域知识”。扩展后，一轮“这论文怎么分类的？”能提取出 `"用户关注KSSE谱嵌入"`、`"KSSE用QC-LDPC稀疏图做谱嵌入"`——**第 3 类（关注话题，允许从问题推断）是最大改进**，原版这类一轮提取不出任何东西。
-  这一 6 类范围是教学版对 TiMem 的有意偏离：TiMem 的 L1 prompt（`config/prompts.yaml:3-28`）本身无分类体系，分类提炼发生在 L3（四类，`prompts.yaml:60-64`）。省略 L3/L4 后，画像分类的素材需要在 L1 就带方向性，L5 整合才能产出有结构的画像。
+- **`recent_l1` 历史窗口**：把该会话最近的 L1 记忆拼进 prompt（`recent_block`），让 LLM **对比后跳过重复**——对应论文 3.2 的 Historical Memories（同层滑动窗口）。用户重复表达同一事实时，只有第一遍被存下来，重复数据也不会占据注入上下文的名额。去重依赖 LLM 遵守指令，属于软约束——TiMem 生产实现同样只靠 prompt 指令去重。
+- **6 类范围**：覆盖用户与对话两个来源——用户自身（身份背景、偏好倾向、决策计划、关键信息）与对话沉淀（关注话题、领域知识）。第 3 类允许从提问本身推断，一轮「这论文怎么分类的？」也能提取出「用户关注 KSSE 谱嵌入」「KSSE 用 QC-LDPC 稀疏图做谱嵌入」两条事实。
 - **容错提示**：生产建议用 LangChain 的 `with_structured_output` + Pydantic schema 替代裸 `json.loads`，教学示例保留最简形式。
-- **segment 单位**：本模块以一轮对话（user + assistant 各一条）为一个 L1 提取单位；TiMem 生产实现是固定 2 轮对话对（`config/settings.yaml:258` `fragment_size: 2`，`utils/dataset_parser.py:117` 按奇偶索引配对）。每轮提取粒度更细、事实更原子化，代价是 LLM 调用次数翻倍——教学场景优先可读性。
+- **segment 单位**：本模块以一轮对话（user 与 agent 各一条）为一个 L1 提取单位；TiMem 是固定 2 轮对话对（`fragment_size: 2`）。每轮提取粒度更细、事实更原子化，代价是 LLM 调用次数翻倍——教学场景优先可读性。
 
 **验证：** 构造一轮测试对话（如「我是做 NLP 的研究生，最近在研究注意力机制」），调用 `extract_l1`，检查：
 1. 提取出用户身份（第 1 类）和研究方向（第 3 类）
@@ -288,7 +276,7 @@ def consolidate_profile(l2_memories: list[Memory], previous_profile: Memory | No
 ```
 
 **逐段讲解：**
-- **画像维度 5 类**：身份与背景、偏好与倾向、长期关注话题、关键决策、重要事实。这是对 L1 提取 6 类的“画像视角”收拢——L1 负责在源头带方向性地记，L5 负责按维度收拢成稳定画像。省略 L3/L4 后，两级 prompt 的维度指引共同承担了原本 L3/L4 的分类提炼职责。
+- **画像维度 5 类**：身份与背景、偏好与倾向、长期关注话题、关键决策、重要事实——与 L1 提取的 6 类同源：L1 在源头按方向记，L5 按维度收拢成稳定画像。
 - **`previous_profile` 增量更新**：旧画像全文进 prompt，LLM 在其基础上合并修正，而非每次从零重写——画像稳定性（论文里“从观察到人格”的渐变）靠这一步保持。
 - **`session_id=None`**：画像属于用户全局，幂等键就是 `level="L5"`，全库至多一条。
 
@@ -492,7 +480,7 @@ def retrieve_memory(state):
     return {"messages": [memory_msg]}
 ```
 
-- **store_memory 节点**（循环结束后）：把本轮对话传给 `extract_l1(dialogue, session_id, recent_l1)` 提取原子事实存入 MongoDB。**注意**：`recent_l1` 用 `load_memories(session_id, level="L1")` 取最近几条传入，让历史去重在每轮提取时生效。此节点只产生副作用（写库），返回 `{"messages": []}`。
+- **store_memory 节点**（循环结束后）：把本轮对话传给 `extract_l1(history, session_id, recent_l1)` 提取原子事实存入 MongoDB。**注意**：`recent_l1` 用 `load_memories(session_id, level="L1")` 取最近几条传入，让历史去重在每轮提取时生效。此节点只产生副作用（写库），返回 `{"messages": []}`。
 
 模块 2 的 `MessagesState` 需扩展：`class MemoryState(MessagesState): session_id: str`。`api/schemas.py` 的 `QueryRequest` 加 `session_id: str = "default"`，`/api/query` 端点把 session_id 传进 graph 的初始 state。
 
@@ -611,7 +599,7 @@ cd backend && uv run pytest tests/test_memory.py -v
 
 | 差异点 | TiMeM 生产实现 | 本教学版 | 为什么偏离仍然合理 |
 |---|---|---|---|
-| 层级数量 | L1-L5 五级 | L1/L2/L5 三级 | L3/L4 与 L2 同构；L5 只吃摘要文本（源码证据见“核心思路”），三层已覆盖“细节→会话→画像”全链路 |
+| 层级数量 | L1-L5 五级 | L1/L2/L5 三级 | L3/L4 与 L2 同构；L5 只吃摘要文本，三层已覆盖“细节→会话→画像”全链路 |
 | L1 提取范围 | prompt 无分类 | 6 类指引 | 省略 L3/L4 后，画像分类素材需要在源头带方向 |
 | L5 画像维度 | 逐级提炼（L3 四类→L4 轨迹） | prompt 5 维度直接合成 | 与上一条同理，两级 prompt 分担提炼职责 |
 | segment 单位 | 2 轮对话对（fragment_size=2） | 每轮对话 | 粒度更细、事实更原子；LLM 调用翻倍但教学场景可接受 |
