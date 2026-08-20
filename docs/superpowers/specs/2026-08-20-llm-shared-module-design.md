@@ -29,7 +29,7 @@ llm = init_chat_model(
 
 def call_llm(prompt: str) -> str:
     """裸 LLM 调用（无工具绑定），记忆提取/整合用。"""
-    return llm.invoke(prompt).content
+    return str(llm.invoke(prompt).content)   # str() 是 Pylance 绕过：content 静态类型为 str | list[str | dict] 联合（多模态遗留），运行时恒为 str——与 parse_pdf 的 str() 同一惯例（2026-08-20 补）
 ```
 
 - 与 `services/documents.py` 同构：模块级持有一个外部服务客户端（documents 持 Mongo，llm 持 LLM），参数全部从 `settings` 读。

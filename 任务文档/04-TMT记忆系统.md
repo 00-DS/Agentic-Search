@@ -130,7 +130,8 @@ llm = init_chat_model(
 
 def call_llm(prompt: str) -> str:
     """裸 LLM 调用（无工具绑定），记忆提取/整合用。"""
-    return llm.invoke(prompt).content
+    return str(llm.invoke(prompt).content)   # 外层 str() 是 Pylance 绕过：content 静态类型是
+    # str | list[str | dict] 联合（多模态遗留），纯文本对话运行时恒为 str——与 parse_pdf 的 str(page.get_text(...)) 同一惯例
 ```
 
 `agents/graph.py` 随之两行改动——`init_chat_model(...)` 块从 `build_graph()` 内删除，改为 import；`bind_tools` 留在图内，因为工具绑定是图特有的：
@@ -143,6 +144,8 @@ def build_graph():
     llm_with_tools = llm.bind_tools(tools)   # 共享客户端上绑定工具
     ...
 ```
+
+`call_llm` 返回值恒为 `str`，消费方用 `json.loads(raw)` 解析（注意是 `loads`——带 s 的吃字符串；`json.load` 吃的是文件对象）。
 
 `store.py` 文件头部相应引入：`from agentic_search.services.llm import call_llm`（本模块后文的 `call_llm(prompt)` 均来自这里）。
 
