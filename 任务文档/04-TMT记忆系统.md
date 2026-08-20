@@ -402,31 +402,30 @@ def consolidate_profile(l2_memories: list[Memory], previous_profile: Memory | No
 
 **验证：** 构造 2 条 L2 摘要（不同会话、话题相关），先传 `previous_profile=None` 生成画像 v1；再构造 1 条含新信息的 L2，传 v1 调用，检查输出画像包含新信息且保留 v1 中仍然成立的内容。
 
-### 2.5 记忆存储 `memory/store.py`（PyMongo CRUD）
+### 2.5 数据库操作 `memory/db.py`（连接初始化 + CRUD）
 
-#### 2.5.1 连接初始化（store.py 文件头部）
+#### 2.5.1 连接初始化（db.py 文件头部）
 
 ```python
-# memory/store.py 文件头部 —— 存储层只管 MongoDB 读写，不碰 LLM
+# memory/db.py 文件头部 —— 数据库操作层只管 MongoDB 读写，不碰 LLM
 from dataclasses import asdict
 
 from pymongo import MongoClient
 
 from agentic_search.configs.config import settings
-from agentic_search.memory.memory import Memory
 
 _client = MongoClient(settings.mongo_url)
 _db = _client[settings.mongo_db]
-_memories_collection = _db["memories"]   # 私有成员：仅 store.py 内部使用，端点/工具层零引用
+_memories_collection = _db["memories"]   # 私有成员：仅 db.py 内部使用，端点/图节点零引用
 ```
 
 **逐段讲解：**
-- **下划线私有**：`_memories_collection` 与 `services/documents.py` 的 `_documents_collection` 同一规范——集合句柄是存储层（store.py）的实现细节，端点与图节点只调存储函数，从不直接碰集合。
+- **下划线私有**：`_memories_collection` 与 `services/documents.py` 的 `_documents_collection` 同一规范——集合句柄是数据库操作层（db.py）的实现细节，端点与图节点只调 db.py 函数，从不直接碰集合。
 
 #### 2.5.2 写入单条：`save_memory(memory)`
 
 ```python
-# memory/store.py
+# memory/db.py
 def save_memory(memory: Memory):
     _memories_collection.insert_one(asdict(memory))
 ```
@@ -434,7 +433,7 @@ def save_memory(memory: Memory):
 #### 2.5.3 条件查询：`load_memories(session_id, level, limit)`
 
 ```python
-# memory/store.py
+# memory/db.py
 def load_memories(session_id: str | None = None, level: str | None = None,
                   limit: int | None = None) -> list[Memory]:
     query = {}
@@ -452,12 +451,12 @@ def load_memories(session_id: str | None = None, level: str | None = None,
     return memories
 ```
 
-`sort`/`limit` 在 MongoDB 服务端执行（按 `timestamp` 倒序、最多取 N 条），只把最终结果拉回 Python——查询三要素（过滤/排序/限量）全收在存储层这一个函数里，上层组合调用即可。
+`sort`/`limit` 在 MongoDB 服务端执行（按 `timestamp` 倒序、最多取 N 条），只把最终结果拉回 Python——查询三要素（过滤/排序/限量）全收在 db.py 这一个函数里，上层组合调用即可。
 
 #### 2.5.4 更新单条：`update_one`（幂等更新）
 
 ```python
-# memory/store.py
+# memory/db.py
 _memories_collection.update_one(
     {"session_id": session_id, "level": "L2"},
     {"$set": {"content": new_summary, "timestamp": datetime.now(timezone.utc).isoformat()}},
@@ -467,12 +466,12 @@ _memories_collection.update_one(
 
 该示例展示 `update_one` 原子操作本身；实际项目中的幂等更新由 `upsert_l2`/`upsert_profile` 封装（见 2.6）。
 
-### 2.6 幂等写入：`upsert_l2(l2)` 与 `upsert_profile(profile)`（`memory/store.py`）
+### 2.6 幂等写入：`upsert_l2(l2)` 与 `upsert_profile(profile)`（`memory/db.py`）
 
-端点需要的“有则更新、无则新建”逻辑封装在存储层（store.py），返回落库文档的 `_id` 字符串：
+端点需要的“有则更新、无则新建”逻辑封装在数据库操作层（db.py），返回落库文档的 `_id` 字符串：
 
 ```python
-# memory/store.py —— 教学示例：展示核心流程，非完整实现
+# memory/db.py —— 教学示例：展示核心流程，非完整实现
 def upsert_l2(l2: Memory) -> str:
 
     existing = _memories_collection.find_one(
@@ -502,13 +501,17 @@ def upsert_profile(profile: Memory) -> str:
 ```
 
 **逐段讲解：**
-- 与 `services/documents.py` 的分层一致：MongoDB 访问全部收在存储层（store.py）函数里，`api/routes.py` 只调用函数。
+- 与 `services/documents.py` 的分层一致：MongoDB 访问全部收在 db.py 函数里，`api/routes.py` 只调用函数。
 - 两个函数只差幂等键（`session_id + level` vs 全局 `level`），对应 L2 每会话一条、L5 全局一条的定位。
-- 这两个函数属于第 2 步开头 import 清单的 store.py 一行（`save_memory, load_memories, upsert_l2, upsert_profile`）。
+- 这两个函数属于第 2 步开头 import 清单的 db.py 一行。
+
+### 2.7 记忆注入：`get_memories_for_context(session_id)`
 
 ```python
-# memory/memory.py —— 教学示例：展示核心逻辑，非完整实现
-def get_memories_for_context(session_id: str, limit: int = 20) -> list[Memory]:
+# memory/db.py —— 教学示例：展示核心逻辑，非完整实现
+L2_TRIGGER_THRESHOLD = 10   # 新增 L1 攒够 10 条 → store_memory 节点自动整合 L2（见第 4 步）
+
+def get_memories_for_context(session_id: str, limit: int = 2 * L2_TRIGGER_THRESHOLD) -> list[Memory]:
     """取全局画像 + 该会话最近 N 条记忆（L1+L2），按时间倒序，配额注入，业界同构。
 
     profile 在前（全局唯一一条）；本会话记忆按时间倒序取最近 limit 条。
@@ -520,9 +523,9 @@ def get_memories_for_context(session_id: str, limit: int = 20) -> list[Memory]:
 ```
 
 **逐段讲解：**
-- **纯组合，零集合访问**：两次 `load_memories` 调用分别取「全局画像」与「本会话最近 N 条」——过滤/排序/限量全是存储层 `load_memories` 的能力，本函数只做配额编排，不碰 `_memories_collection`（分层与 `agents/tools.py` 薄委托同一规范）。
+- **纯组合**：两次 `load_memories` 调用分别取「全局画像」与「本会话最近 N 条」——查询三要素（过滤/排序/限量）复用 §2.5.3 的能力，本函数只做配额编排。
 - **`load_memories(level="L5")` 在最前**：画像是最稳定的背景知识，放列表头部，注入 prompt 时格式化为独立一段（见第 4 步）。
-- **`limit=20` 是上下文保护线**：本会话记忆按时间倒序取最近 20 条，用户偏好变化时 Agent 优先读到当前状态。
+- **窗口 = 2×阈值联动**：`limit` 缺省由 `2 * L2_TRIGGER_THRESHOLD` 派生——L2 每次整合都刷新 timestamp，其后最多再攒阈值条新 L1 就再次触发整合，因此 L2 恒在注入窗口内，「L1 堆积淹没 L2」由构造消解，注入端无需给 L2 特殊配额。
 - **其他会话的记忆自然被过滤**：第二次调用查询条件是 `session_id` 等值匹配，跨会话的记忆只有画像这一条通道进入上下文。
 
 **验证：** 会话 A 存 3 条 L1，会话 B 存 2 条 L1，库里存 1 条 L5。调用 `get_memories_for_context("A")`：返回 4 条（L5 在前 + A 的 3 条），B 的记忆不在其中。
