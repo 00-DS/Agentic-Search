@@ -720,6 +720,17 @@ async function consolidateProfile() {   // 「整合画像」（profile-btn，�
 }
 ```
 
+最后一步是把新增按钮接进 JS：顶部元素引用区补两行取按钮，底部事件绑定区补两行接点击（控件区的按钮若不绑定 `click` 事件，点击不会有任何反应）：
+
+```javascript
+const newSessionBtn = document.getElementById("new-session-btn");
+const profileBtn    = document.getElementById("profile-btn");
+
+
+newSessionBtn.addEventListener("click", newSession);        // 新会话
+profileBtn.addEventListener("click", consolidateProfile);   // 整合画像
+```
+
 ## 第 6 步：编写 `tests/test_memory.py`
 
 重点测试零 LLM 依赖的部分：
