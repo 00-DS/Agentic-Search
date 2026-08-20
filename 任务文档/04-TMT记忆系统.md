@@ -275,7 +275,7 @@ PROMPTS: dict[str, str] = yaml.safe_load(
 
 ```python
 # memory/memory.py —— 教学示例：展示核心字段，非完整实现
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 
 @dataclass
 class Memory:
@@ -407,8 +407,12 @@ def consolidate_profile(l2_memories: list[Memory], previous_profile: Memory | No
 
 ```python
 # memory/store.py 文件头部 —— 存储层只管 MongoDB 读写，不碰 LLM
+from dataclasses import asdict
+
 from pymongo import MongoClient
+
 from agentic_search.configs.config import settings
+from agentic_search.memory.memory import Memory
 
 _client = MongoClient(settings.mongo_url)
 _db = _client[settings.mongo_db]
@@ -426,23 +430,28 @@ def save_memory(memory: Memory):
     _memories_collection.insert_one(asdict(memory))
 ```
 
-#### 2.5.3 条件查询：`load_memories(session_id, level)`
+#### 2.5.3 条件查询：`load_memories(session_id, level, limit)`
 
 ```python
 # memory/store.py
-def load_memories(session_id: str | None = None, level: str | None = None) -> list[Memory]:
+def load_memories(session_id: str | None = None, level: str | None = None,
+                  limit: int | None = None) -> list[Memory]:
     query = {}
     if session_id is not None:
         query["session_id"] = session_id
     if level is not None:
         query["level"] = level
-    docs = _memories_collection.find(query)
+    docs = _memories_collection.find(query).sort("timestamp", -1)
+    if limit is not None:
+        docs = docs.limit(limit)
     memories = []
     for doc in docs:
         doc.pop("_id", None)
         memories.append(Memory(**doc))
     return memories
 ```
+
+`sort`/`limit` 在 MongoDB 服务端执行（按 `timestamp` 倒序、最多取 N 条），只把最终结果拉回 Python——查询三要素（过滤/排序/限量）全收在存储层这一个函数里，上层组合调用即可。
 
 #### 2.5.4 更新单条：`update_one`（幂等更新）
 
@@ -464,17 +473,19 @@ _memories_collection.update_one(
 ```python
 # memory/store.py —— 教学示例：展示核心流程，非完整实现
 def upsert_l2(l2: Memory) -> str:
-    """按 (session_id, level="L2") 幂等写入 L2：已有则更新 content/timestamp，返回 _id。"""
+
     existing = _memories_collection.find_one(
         {"session_id": l2.session_id, "level": "L2"}
     )
+
     if existing is None:
         return str(_memories_collection.insert_one(asdict(l2)).inserted_id)
-    _memories_collection.update_one(
-        {"_id": existing["_id"]},
-        {"$set": {"content": l2.content, "timestamp": l2.timestamp}},
-    )
-    return str(existing["_id"])
+    else:
+        _memories_collection.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"content": l2.content, "timestamp": l2.timestamp}},
+        )
+        return str(existing["_id"])
 
 
 def upsert_profile(profile: Memory) -> str:
@@ -494,10 +505,6 @@ def upsert_profile(profile: Memory) -> str:
 - 两个函数只差幂等键（`session_id + level` vs 全局 `level`），对应 L2 每会话一条、L5 全局一条的定位。
 - 这两个函数属于第 2 步开头 import 清单的 store.py 一行（`save_memory, load_memories, upsert_l2, upsert_profile`）。
 
-### 2.7 记忆注入：`get_memories_for_context(session_id)`
-
-分层注入的落地：全局画像 + 本会话最近 N 条，两类一起返回。
-
 ```python
 # memory/memory.py —— 教学示例：展示核心逻辑，非完整实现
 def get_memories_for_context(session_id: str, limit: int = 20) -> list[Memory]:
@@ -506,20 +513,16 @@ def get_memories_for_context(session_id: str, limit: int = 20) -> list[Memory]:
     profile 在前（全局唯一一条）；本会话记忆按时间倒序取最近 limit 条。
     跨会话记忆由 profile 承担：其他会话的 L1/L2 留在库中，作为下次整合画像的素材。
     """
-    memories = load_memories(level="L5")          # 全局至多一条画像
-    docs = _memories_collection.find(
-        {"session_id": session_id}
-    ).sort("timestamp", -1).limit(limit)
-    for doc in docs:
-        doc.pop("_id", None)
-        memories.append(Memory(**doc))
+    memories = load_memories(level="L5")                            # 全局至多一条画像
+    memories += load_memories(session_id=session_id, limit=limit)   # 本会话 L1+L2，时间倒序取前 N
     return memories
 ```
 
 **逐段讲解：**
+- **纯组合，零集合访问**：两次 `load_memories` 调用分别取「全局画像」与「本会话最近 N 条」——过滤/排序/限量全是存储层 `load_memories` 的能力，本函数只做配额编排，不碰 `_memories_collection`（分层与 `agents/tools.py` 薄委托同一规范）。
 - **`load_memories(level="L5")` 在最前**：画像是最稳定的背景知识，放列表头部，注入 prompt 时格式化为独立一段（见第 4 步）。
-- **`sort("timestamp", -1)` + `.limit(limit)`**：本会话记忆按时间倒序、最多 20 条——上下文保护线，用户偏好变化时 Agent 优先读到当前状态。
-- **其他会话的记忆自然被过滤**：查询条件是 `session_id` 等值匹配，跨会话的记忆只有画像这一条通道进入上下文。
+- **`limit=20` 是上下文保护线**：本会话记忆按时间倒序取最近 20 条，用户偏好变化时 Agent 优先读到当前状态。
+- **其他会话的记忆自然被过滤**：第二次调用查询条件是 `session_id` 等值匹配，跨会话的记忆只有画像这一条通道进入上下文。
 
 **验证：** 会话 A 存 3 条 L1，会话 B 存 2 条 L1，库里存 1 条 L5。调用 `get_memories_for_context("A")`：返回 4 条（L5 在前 + A 的 3 条），B 的记忆不在其中。
 
