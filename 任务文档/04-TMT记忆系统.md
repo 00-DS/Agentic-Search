@@ -351,7 +351,7 @@ def consolidate_l2(l1_memories: list[Memory]) -> Memory:
     """将同会话的所有 L1 整合为一条 L2 会话摘要。
 
     空列表守卫：会话尚无 L1 时直接报错，由调用方（端点）转为 422。
-    幂等由 store 层的 upsert_l2 保证（见 2.6）。
+    幂等由数据库操作层的 upsert_l2 保证（见 2.6）。
     """
     if not l1_memories:
         raise ValueError("暂无 L1 记忆")
