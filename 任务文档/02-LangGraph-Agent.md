@@ -440,6 +440,8 @@ def build_graph():
 
 **为什么 `@retry` 包在 `llm_call` 而非 `init_chat_model` 上？** `init_chat_model(...)` 是工厂——只建一次客户端对象，建失败多半是配置错（重试也没用）；而 `llm_with_tools.invoke(...)` 是真正的网络调用，每轮都可能超时/断连，这才是该重试的对象。装饰器刚好套在「这一行调用」上——这正是第 5 步埋下的 `@retry` 与第 6 步图组装的衔接点。
 
+> 模块 4 的记忆层也需要 LLM，届时会把这里的客户端提升为 `services/llm.py` 共享模块；本模块先保持闭包，聚焦图组装。
+
 ```
 __start__ → llm_call ⇄ tool_node → __end__   （条件边 should_continue 控制循环与终止）
 ```

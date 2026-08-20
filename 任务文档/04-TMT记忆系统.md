@@ -103,14 +103,6 @@ oh-my-pi（omp）：它的记忆子系统验证了同样的结构在生产级 ag
 
 ## 第 1 步：理解 TMT 思想
 
-### 1.1 论文阅读引导
-
-> 📖 阅读 Abstract + Figure 2（第 1-3 页）：五层结构（Segments → Sessions → Daily → Weekly → Profile）与三个核心组件。
-> 📖 阅读 Section 3.1 Temporal Memory Tree（第 3-4 页）：节点存储时间区间和语义内容——低层级保持细节，高层级存储抽象。
-> 📖 阅读 Section 3.2 Memory Consolidation（第 3-4 页）：Child Memories（低层级分组到高层级时间窗口）和 Historical Memories（同层级滑动窗口 w=3 保持连续性）。
-
-### 1.2 理解核心概念
-
 - **L1、L2、L5 的区别**：L1 是原子事实（如「用户在研究注意力机制」），L2 是会话级摘要（如「本次会话讨论了 Transformer 架构」），L5 是跨会话的稳定画像（如「用户是关注注意力机制的 NLP 研究者」）。
 - **整合的目的**：压缩信息量，保留要点，丢弃噪音。
 
@@ -118,6 +110,42 @@ oh-my-pi（omp）：它的记忆子系统验证了同样的结构在生产级 ag
 
 在 `backend/src/agentic_search/memory/` 下创建 `store.py`，通过包化 import 暴露：
 `from agentic_search.memory.store import extract_l1, consolidate_l2, consolidate_profile, get_memories_for_context, save_memory, load_memories, upsert_l2, upsert_profile`。
+
+### 前置：LLM 客户端提升为共享模块 `services/llm.py`
+
+模块 2 的 LLM 客户端是 `build_graph()` 内部的局部变量（`llm_call` 节点以闭包捕获），模块 4 的记忆层也需要 LLM——`store.py` 的三个函数（`extract_l1`/`consolidate_l2`/`consolidate_profile`）都要裸调用 LLM（无工具绑定）。此时闭包遇到了第二个消费者：`store.py` 既被 `/api/consolidate` 端点调用、又被图内的 `store_memory` 节点调用（第 4 步），而图又 import `store.py`——若 `store.py` 反向从 `graph.py` 取 LLM 就成了循环导入。解法是把客户端提升为双方都能 import 的共享模块，与 `services/documents.py` 持有 Mongo 客户端同一模式：
+
+```python
+# services/llm.py —— 模块级 LLM 客户端，graph 与 store 共用
+from langchain.chat_models import init_chat_model
+from agentic_search.configs.config import settings
+
+llm = init_chat_model(
+    model=settings.llm_model,
+    model_provider=settings.llm_model_provider,
+    base_url=settings.llm_base_url,
+    api_key=settings.llm_api_key,
+    timeout=settings.llm_timeout,
+)
+
+def call_llm(prompt: str) -> str:
+    """裸 LLM 调用（无工具绑定），记忆提取/整合用。"""
+    return llm.invoke(prompt).content
+```
+
+`agents/graph.py` 随之两行改动——`init_chat_model(...)` 块从 `build_graph()` 内删除，改为 import；`bind_tools` 留在图内，因为工具绑定是图特有的：
+
+```python
+from agentic_search.services.llm import llm
+
+def build_graph():
+    tools = [list_papers, read_paper, search_paper, extract_abstract]
+    llm_with_tools = llm.bind_tools(tools)   # 共享客户端上绑定工具
+    ...
+```
+
+`store.py` 文件头部相应引入：`from agentic_search.services.llm import call_llm`（本模块后文的 `call_llm(prompt)` 均来自这里）。
+
 
 ### 2.1 数据结构：Memory dataclass
 
@@ -191,7 +219,7 @@ def extract_l1(history: dict, session_id: str, recent_l1: list[Memory] = []) -> 
 已有记忆（若本轮事实与以下已有记忆重复，跳过，不要重复输出）：
 {recent_block}
 
-对话：user：{history["user"]}  Agent：{history["agent"]}
+对话：User：{history["user"]}  Agent：{history["agent"]}
 以 JSON 数组输出：["事实1", "事实2", ...]"""
     raw = call_llm(prompt)               # 调用 LLM，返回 JSON 字符串
     facts = json.loads(raw)              # 解析为字符串列表
@@ -594,6 +622,9 @@ cd backend && uv run pytest tests/test_memory.py -v
 **刷新页面后记忆还在吗？** 在。记忆存 MongoDB；刷新保持同一 session_id（localStorage），本会话 L1/L2 继续累积。
 
 **将来记忆多了怎么办？** 两条路线，按产品形态选。**agent 路线（标杆做法，omp/hermes 同款）**：压缩与全文检索——hermes 用 SQLite FTS5 全文检索跨会话对话（`tools/session_search_tool.py`），omp 在上下文逼近上限时用 LLM 摘要压缩历史，全程零向量依赖。**记忆产品路线（可选）**：TiMeM 式双通道检索——语义向量（权重 0.9）+ BM25 关键词（0.1）；即便选这条路，omp 的 mnemopi 后端也只把向量存进自有 SQLite，而非引入独立向量数据库。无论哪条，`get_memories_for_context` 的函数名都是为切换预留的接口，图编排保持原样。
+
+**为什么 `call_llm` 不做重试？** 模块 2 手写的 `@retry` 装饰器包在图的 `llm_call` 上——那是 agent 回答用户的主链路，失败要兜底。记忆的提取与整合是后台/手动操作，失败时重按一次按钮或下一轮对话即可，教学从简。
+
 
 ## 教学版与 TiMeM 实现的差异说明
 
