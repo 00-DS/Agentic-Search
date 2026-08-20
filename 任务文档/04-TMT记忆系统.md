@@ -8,10 +8,10 @@
 ## 学习目标
 
 1. 理解 TMT（时序记忆树）的核心思想——从对话中提取原子事实，按会话压缩为摘要，再跨会话提炼为用户画像
-2. 用 Python + LLM + MongoDB 从零实现 **L1 事实提取**（每轮对话后自动触发）、**L2 会话摘要**与 **L5 用户画像**（均手动触发）
-3. 理解整合的**两种触发机制**：TiMem 生产实现的空闲超时扫描与本教学项目的手动按钮触发
+2. 用 Python + LLM + MongoDB 从零实现 **L1 事实提取**（每轮对话后自动触发）、**L2 会话摘要**（阈值自动触发 + 手动兜底）与 **L5 用户画像**（手动触发）
+3. 理解整合的**两种触发机制**：TiMem 生产实现的空闲超时扫描与本教学项目的阈值自动触发与手动按钮
 4. 在 LangGraph 图中集成 `retrieve_memory` 与 `store_memory` 节点：本会话记忆直接注入，跨会话记忆由 profile 承担
-5. 实现 `POST /api/consolidate` 端点的两级整合能力（请求体 `level` 区分 L2/L5）与前端按钮，手动、即时地触发整合并保证幂等
+5. 实现 `POST /api/consolidate` 端点的两级整合能力（请求体 `level` 区分 L2/L5）与前端按钮，即时触发整合并保证幂等
 6. 理解“分层配额注入”为何是业界标杆做法——以 oh-my-pi（omp）为标杆对照本模块的三层设计，同时理解提取时对比历史窗口（recent_l1）从源头减少重复
 
 ## 模块结构
@@ -94,7 +94,7 @@ oh-my-pi（omp）：它的记忆子系统验证了同样的结构在生产级 ag
 
 | 维度 | TiMem 生产实现 | 本教学项目 |
 |------|---------------|-----------|
-| L2 触发器 | `SessionMemoryScanner` 每 10 分钟扫描，会话 idle ≥10 分钟视为结束 | 前端「整合会话记忆」按钮 |
+| L2 触发器 | `SessionMemoryScanner` 每 10 分钟扫描，会话 idle ≥10 分钟视为结束 | 新增 L1 达阈值自动触发（store_memory 节点内联）+ 前端按钮即时兜底 |
 | L5 触发器 | 跨月检测自动回填（`core/catchup_detector.py`） | 前端「整合画像」按钮 |
 | 实现位置 | `services/session_memory_scanner.py`、`timem/workflows/`（均为 TiMeM 仓库内部路径） | `api/routes.py` 同一 /api/consolidate 端点（level 区分） |
 | 目的 | 生产自动化 | 教学即时可观察 |
@@ -578,7 +578,7 @@ async def consolidate(req: ConsolidateRequest):
 **逐段讲解：**
 - **`level` 分流**：`"L5"` 走画像分支（输入是跨会话全部 L2 + 现有 L5，幂等键 `level="L5"` 全局一条）；
   其余走 L2 分支（输入是 `req.session_id` 的全部 L1，幂等键 `session_id + level`，每会话一条）。
-- **幂等由存储层保证**：`upsert_l2`/`upsert_profile` 封装“查—增改”逻辑——端点只组数据、调函数、返结果，与模块 2 的分层铁律一致。
+- **幂等由数据库操作层保证**：`upsert_l2`/`upsert_profile` 封装“查—增改”逻辑——端点只组数据、调函数、返结果，与模块 2 的分层铁律一致。
 - **`l2_id`/`profile_id` 返回 MongoDB `_id`**：文档主键全局唯一，比时间戳可靠（同一秒内两次整合会撞车）。
 - **空输入守卫**：两个分支各自在整合前检查输入为空 → 422，前端据此提示“先对话/先整合会话”。
 
@@ -720,12 +720,13 @@ async function consolidateProfile() {   // 「整合画像」（profile-btn，�
 - Memory 数据结构字段完整性（含 L5 的 `session_id=None`）
 - MongoDB 存取往返一致性（save_memory → load_memories → 对比）
 - `get_memories_for_context`：profile 在前 + 本会话 L1/L2 时间倒序 + limit 生效 + **其他会话记忆被隔离**
+- 注入窗口联动：`get_memories_for_context` 缺省 limit = 2×L2_TRIGGER_THRESHOLD（静态断言常量关系，零 LLM）
 - L2 幂等：同一会话二次 consolidate 更新而非新增
 - L5 幂等：二次 consolidate_profile 更新而非新增（全库仍只有一条 L5）
 - 端点空输入守卫（无 L1 的会话 / 无 L2 的库 → 422）
 - PROMPTS 四键就位（persona / l1_extract / l2_consolidate / l5_profile）+ 占位符与调用点参数集匹配（`.format()` 静态验证，零 LLM）
 
-L1 / L2 / L5 的 LLM 调用涉及真实模型，标记为集成测试（对齐 `test_graph.py` 打真 LLM 的做法）。
+L1 / L2 / L5 的 LLM 调用涉及真实模型，标记为集成测试（对齐 `test_graph.py` 打真 LLM 的做法）。L2 阈值自动触发是图内编排行为且涉及真 LLM，归入完成检查的场景验证，不进本文件单测。
 
 **验证：**
 
@@ -737,8 +738,9 @@ cd backend && uv run pytest tests/test_memory.py -v
 
 ## 完成检查
 
-- [ ] `memory/memory.py` 实现 `Memory`、`extract_l1`（官方移植 + recent_l1 去重）、`consolidate_l2`（守卫）、`consolidate_profile`、`get_memories_for_context`；`memory/store.py` 实现 `save_memory`/`load_memories`/`upsert_l2`/`upsert_profile`
+- [ ] `memory/memory.py` 实现 `extract_l1`（官方移植 + recent_l1 去重）、`consolidate_l2`（守卫）、`consolidate_profile`；`memory/db.py` 实现 `Memory`、`save_memory`/`load_memories`、`upsert_l2`/`upsert_profile`、`get_memories_for_context`（含 `L2_TRIGGER_THRESHOLD` 联动）
 - [ ] Agent 图扩展为含 `retrieve_memory` / `store_memory` 节点，同会话连续对话能引用历史记忆
+- [ ] 同一会话累计新增 ≥10 条 L1 后无需点按钮，该会话 L2 自动出现/刷新；再次触发为更新而非新增
 - [ ] `POST /api/consolidate`（`level` 区分 L2/L5）实现且幂等，空输入返回 422
 - [ ] 前端「新会话」「整合会话记忆」「整合画像」三按钮工作正常
 - [ ] `uv run pytest tests/test_memory.py -v` 全部通过
@@ -752,7 +754,9 @@ cd backend && uv run pytest tests/test_memory.py -v
 
 **L1 提取返回空列表？** 对话中可能没有可长期复用的事实；或对话过于寒暄。调整 prompt 的提取规则再试。
 
-**注入的历史记忆太多撑爆上下文？** `get_memories_for_context` 的 `limit`（默认 20）已限制；确需更多可调大，注意上下文窗口。
+**注入的历史记忆太多撑爆上下文？** `get_memories_for_context` 的 `limit`（默认 2×L2_TRIGGER_THRESHOLD = 20）已限制；确需更多可调大，注意上下文窗口。
+
+**为什么注入窗口是阈值的两倍？** L2 每次整合都刷新 timestamp；窗口 = 2×阈值意味着下一次自动触发前，L2 之后最多积压阈值条新 L1——L2 恒在最近 20 条窗口内，注入永远不会只剩 L1。一个常量（`L2_TRIGGER_THRESHOLD`）同时定节奏与窗口，联动由构造保证。
 
 **多轮对话后 memories 集合文档数越来越多？** `extract_l1` 的 recent_l1 历史窗口让重复事实在提取时即被跳过；已被 L2 覆盖的旧 L1 可定期 `delete_many` 清理。
 
@@ -780,7 +784,7 @@ cd backend && uv run pytest tests/test_memory.py -v
 | L1 输出形态 | 一段第三人称叙事（片段记忆） | JSON 数组（多条原子事实） | 逐条入库便于 recent_l1 去重与 Compass 观察；主体思想（只记新事实、保留实质信息）与官方一致 |
 | L5 画像结构 | 画像档案（身份/事件/特质/决策/变化） | 同左（官方移植，单人版） | 输入从 L4 周报改为 L2 会话摘要（跳级），画像结构不变 |
 | segment 单位 | 2 轮对话对（fragment_size=2） | 每轮对话 | 粒度更细、事实更原子；LLM 调用翻倍但教学场景可接受 |
-| 整合触发 | 空闲超时扫描 + 跨月回填 | 两个手动按钮 | 即时可观察、可调试；机制对比本身就是学习目标 |
+| 整合触发 | 空闲超时扫描 + 跨月回填 | 阈值自动（新增 L1 ≥ 10）+ 手动按钮兜底 | 保留「无需人工干预」语义，又即时可观察、可调试；机制对比本身就是学习目标 |
 | 存储 | PostgreSQL + Qdrant + 连接池 | MongoDB 单集合 | 教学调试与 Compass 可视化优先 |
 | 检索 | 双通道：语义向量 + BM25（Qdrant） | 配额注入（零向量依赖） | 与标杆 omp 及 hermes/Codex/Claude Code 核心记忆链路同构；向量检索属于记忆产品的可选插件层 |
 | 去重 | prompt 指令级（无算法） | 同样 prompt 指令级 | 与生产一致；教学文档明确这是软约束 |
