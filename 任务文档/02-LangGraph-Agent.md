@@ -145,8 +145,8 @@ backend/src/agentic_search/
 │   └── graph.py         # 本模块创建：ReAct agent 图
 ├── memory/
 │   ├── __init__.py
-│   ├── memory.py        # 模块 4 实现：L1/L2/L5 记忆加工（提取/整合/注入取数）
-│   └── store.py         # 模块 4 实现：记忆存储（MongoDB 读写）
+│   ├── memory.py        # 模块 4 实现：L1/L2/L5 记忆加工（提取/整合）
+│   └── db.py            # 模块 4 实现：记忆数据库操作（MongoDB 读写 + 注入取数）
 └── services/
     ├── __init__.py
     └── documents.py     # 模块 1 已实现：parse_pdf / list_docs
