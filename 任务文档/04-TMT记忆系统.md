@@ -626,11 +626,31 @@ def retrieve_memory(state):
     return {"messages": [memory_msg]}
 ```
 
-- **store_memory 节点**（循环结束后）：把本轮对话传给 `memory.py` 的 `extract_l1(history, session_id, recent_l1)` 提取原子事实，经 `save_memory` 存入 MongoDB。**注意**：`recent_l1` 用 `load_memories(session_id, level="L1")` 取最近几条传入，让历史去重在每轮提取时生效。此节点只产生副作用（写库），返回 `{"messages": []}`。
+- **store_memory 节点**（循环结束后）：提取本轮 L1 落库，随后内联执行 **L2 自动触发**——新增 L1 攒够阈值就把该会话全部 L1 重整合为一条 L2。此节点只产生副作用（写库），返回 `{"messages": []}`。
+
+```python
+def store_memory(state):
+    """提取 L1 落库 + L2 自动触发（新增 L1 达阈值则重整合）。"""
+    session_id = state["session_id"]
+    history = {"user": ..., "agent": ...}                          # 取最后一对 user/agent 消息
+    recent_l1 = load_memories(session_id, level="L1", limit=10)    # 历史去重窗口
+    for m in extract_l1(history, session_id, recent_l1):
+        save_memory(m)
+
+    # —— L2 自动触发：新增 L1（timestamp 晚于现有 L2）达阈值则重整合 ——
+    l1s = load_memories(session_id, level="L1")
+    l2s = load_memories(session_id, level="L2")
+    new_l1 = l1s if not l2s else [m for m in l1s if m.timestamp > l2s[0].timestamp]
+    if len(new_l1) >= L2_TRIGGER_THRESHOLD:
+        upsert_l2(consolidate_l2(l1s))   # 全部 L1 重整合，幂等更新同一条
+    return {"messages": []}
+```
+
+**触发时机与加工能力的分工**：何时整合（阈值判定、timestamp 对比）是编排策略，写在图节点；怎么整合（`consolidate_l2`）与怎么落库（`upsert_l2`）是记忆层能力。手动按钮走端点调同一套能力（第 3 步），两处触发点对称——按钮是不必等攒满的即时兜底。
 
 模块 2 的 `MessagesState` 需扩展：`class MemoryState(MessagesState): session_id: str`。`api/schemas.py` 的 `QueryRequest` 加 `session_id: str = "default"`，`/api/query` 端点把 session_id 传进 graph 的初始 state。
 
-**验证：** 会话 A 连续两轮提问（第二轮应看到第一轮的 L1 注入）；点「新会话」后提问「我是做什么的」——若已点过「整合画像」，Agent 应能基于 profile 回答。再问「你是谁」——Agent 应以论文问答助手身份用中文自我介绍（persona 生效）。
+**验证：** 会话 A 连续两轮提问（第二轮应看到第一轮的 L1 注入）；点「新会话」后提问「我是做什么的」——若已点过「整合画像」，Agent 应能基于 profile 回答。再问「你是谁」——Agent 应以论文问答助手身份用中文自我介绍（persona 生效）。同一会话累计新增 ≥10 条 L1 后不点按钮，Compass 中该会话 L2 自动出现/刷新（自动触发生效）。
 
 
 ## 第 5 步：前端
