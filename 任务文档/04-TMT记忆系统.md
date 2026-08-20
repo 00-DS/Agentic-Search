@@ -130,8 +130,7 @@ llm = init_chat_model(
 
 def call_llm(prompt: str) -> str:
     """裸 LLM 调用（无工具绑定），记忆提取/整合用。"""
-    return str(llm.invoke(prompt).content)   # 外层 str() 是 Pylance 绕过：content 静态类型是
-    # str | list[str | dict] 联合（多模态遗留），纯文本对话运行时恒为 str——与 parse_pdf 的 str(page.get_text(...)) 同一惯例
+    return llm.invoke(prompt).content
 ```
 
 `agents/graph.py` 随之两行改动——`init_chat_model(...)` 块从 `build_graph()` 内删除，改为 import；`bind_tools` 留在图内，因为工具绑定是图特有的：
@@ -147,7 +146,24 @@ def build_graph():
 
 `call_llm` 返回值恒为 `str`，消费方用 `json.loads(raw)` 解析（注意是 `loads`——带 s 的吃字符串；`json.load` 吃的是文件对象）。
 
-`store.py` 文件头部相应引入：`from agentic_search.services.llm import call_llm`（本模块后文的 `call_llm(prompt)` 均来自这里）。
+`store.py` 文件头部相应引入（本模块后文的 `call_llm(prompt)` / `json.loads` / `now_iso()` 均来自这里）：
+
+```python
+# store.py 文件头部
+import json
+from datetime import datetime, timezone
+
+from agentic_search.services.llm import call_llm
+
+
+def now_iso() -> str:
+    """当前 UTC 时间的 ISO 8601 字符串——Memory.timestamp 的取值。
+
+    统一用 UTC + 固定格式：ISO 8601 字符串按字典序排列即按时间排列，
+    get_memories_for_context 的 sort("timestamp", -1) 才能正确取最近记忆。
+    """
+    return datetime.now(timezone.utc).isoformat()
+```
 
 
 ### 2.1 数据结构：Memory dataclass
@@ -227,8 +243,8 @@ def extract_l1(history: dict, session_id: str, recent_l1: list[Memory] = []) -> 
     raw = call_llm(prompt)               # 调用 LLM，返回 JSON 字符串
     facts = json.loads(raw)              # 解析为字符串列表
     return [
-        Memory(level="L1", content=f, timestamp=now_iso(), session_id=session_id)
-        for f in facts
+        Memory(level="L1", content=fact, timestamp=now_iso(), session_id=session_id)
+        for fact in facts
     ]
 ```
 
