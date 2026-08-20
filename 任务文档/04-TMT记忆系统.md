@@ -673,6 +673,12 @@ function newSession() {
 }
 ```
 
+还有一处必须同步：模块 3 的 `askQuestion` 请求体只有 `{ question }`——本模块补上会话 ID，否则后端落回缺省 `"default"`，提问产生的 L1 与按钮整合的会话对不上号：
+
+```javascript
+body: JSON.stringify({ question, session_id: currentSessionId }),
+```
+
 **设计意图**：会话边界完全由用户显式控制——刷新页面继续同一会话（L1/L2 继续累积到同一 session_id 下），
 点「新会话」才切换。切换后注入上下文的记忆只剩全局画像一条，跨会话记忆由 profile 承担。
 
