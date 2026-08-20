@@ -106,13 +106,13 @@ oh-my-pi（omp）：它的记忆子系统验证了同样的结构在生产级 ag
 - **L1、L2、L5 的区别**：L1 是原子事实（如「用户在研究注意力机制」），L2 是会话级摘要（如「本次会话讨论了 Transformer 架构」），L5 是跨会话的稳定画像（如「用户是关注注意力机制的 NLP 研究者」）。
 - **整合的目的**：压缩信息量，保留要点，丢弃噪音。
 
-## 第 2 步：实现记忆层 `memory/`——`memory.py`（加工）与 `store.py`（存储）
+## 第 2 步：实现记忆层 `memory/`——`memory.py`（加工）与 `db.py`（数据库操作）
 
-记忆层拆两个文件，各管一件事：**`memory/memory.py` = 记忆加工**（Memory 数据结构、LLM 提取与整合、上下文注入取数），**`memory/store.py` = 记忆存储**（MongoDB 读写与幂等写入）。通过包化 import 暴露：
+记忆层拆两个文件，各管一件事：**`memory/memory.py` = 记忆加工**（LLM 提取与整合——三个函数全部纯进出：数据进、Memory 出，不碰数据库），**`memory/db.py` = 数据库操作**（Memory 数据结构、MongoDB 读写、幂等写入、注入取数）。通过包化 import 暴露：
 
 ```python
-from agentic_search.memory.memory import Memory, extract_l1, consolidate_l2, consolidate_profile, get_memories_for_context
-from agentic_search.memory.store import save_memory, load_memories, upsert_l2, upsert_profile
+from agentic_search.memory.memory import extract_l1, consolidate_l2, consolidate_profile
+from agentic_search.memory.db import Memory, save_memory, load_memories, upsert_l2, upsert_profile, get_memories_for_context, L2_TRIGGER_THRESHOLD
 ```
 
 ### 前置：LLM 客户端提升为共享模块 `services/llm.py`
@@ -120,7 +120,7 @@ from agentic_search.memory.store import save_memory, load_memories, upsert_l2, u
 模块 2 的 LLM 客户端是 `build_graph()` 内部的局部变量（`llm_call` 节点以闭包捕获），模块 4 的记忆层也需要 LLM——`memory.py` 的三个函数（`extract_l1`/`consolidate_l2`/`consolidate_profile`）都要裸调用 LLM（无工具绑定）。此时闭包遇到了第二个消费者：`memory.py` 既被 `/api/consolidate` 端点调用、又被图内的 `store_memory` 节点调用（第 4 步），而图又 import `memory.py`——若 `memory.py` 反向从 `graph.py` 取 LLM 就成了循环导入。解法是把客户端提升为双方都能 import 的共享模块，与 `services/documents.py` 持有 Mongo 客户端同一模式：
 
 ```python
-# services/llm.py —— 模块级 LLM 客户端，graph 与 store 共用
+# services/llm.py —— 模块级 LLM 客户端，graph 与记忆层共用
 from langchain.chat_models import init_chat_model
 from agentic_search.configs.config import settings
 
@@ -150,18 +150,18 @@ def build_graph():
 
 `call_llm` 返回值恒为 `str`，消费方用 `json.loads(raw)` 解析（注意是 `loads`——带 s 的吃字符串；`json.load` 吃的是文件对象）。
 
-`memory.py` 文件头部相应引入（本模块后文的 `call_llm(prompt)` / `json.loads` / `datetime.now(timezone.utc)` 均来自这里；`store.py` 只管存储，不碰 LLM）：
+`memory.py` 文件头部相应引入（本模块后文的 `call_llm(prompt)` / `json.loads` / `datetime.now(timezone.utc)` 均来自这里；`db.py` 只管数据库，不碰 LLM）：
 
 ```python
 # memory/memory.py 文件头部
 import json
 from datetime import datetime, timezone
 
-from agentic_search.memory.store import load_memories
+from agentic_search.memory.db import Memory
 from agentic_search.services.llm import call_llm
 ```
 
-依赖方向单一：`memory.py` → `store.py`（取数走存储函数）→ MongoDB；`api/routes.py` 两者都调；图节点只调 `memory.py`。
+依赖方向单一：`memory.py` → `db.py`（只用 Memory 数据结构）→ MongoDB；`api/routes.py` 与图节点按需两者都调——加工找 `memory.py`，存取找 `db.py`。
 
 各函数直接用 `datetime.now(timezone.utc).isoformat()` 生成时间戳。存字符串而非 datetime 对象：`Memory` 四字段全为 `str` 保持类型一致与 JSON 可序列化；BSON Date 读回是无时区的毫秒精度 datetime（时区信息丢失），ISO 字符串存什么读回什么；且 ISO 8601 字符串按字典序排列即按时间排列，`sort("timestamp", -1)` 正确取最近记忆。
 
@@ -269,7 +269,7 @@ PROMPTS: dict[str, str] = yaml.safe_load(
 )
 ```
 
-`pyyaml` 需声明为直接依赖（`uv add pyyaml`——它此前作为 uvicorn 的传递依赖已在锁文件里，此处转正）。`memory/memory.py` 文件头部相应加 `from agentic_search.configs.prompts import PROMPTS`（存储层 store.py 零 LLM 依赖，用不到它）。
+`pyyaml` 需声明为直接依赖（`uv add pyyaml`——它此前作为 uvicorn 的传递依赖已在锁文件里，此处转正）。`memory/memory.py` 文件头部相应加 `from agentic_search.configs.prompts import PROMPTS`（`db.py` 零 LLM 依赖，用不到它）。
 
 ### 2.1 数据结构：Memory dataclass
 
