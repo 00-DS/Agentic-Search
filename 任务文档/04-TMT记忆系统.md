@@ -274,7 +274,7 @@ PROMPTS: dict[str, str] = yaml.safe_load(
 ### 2.1 数据结构：Memory dataclass
 
 ```python
-# memory/memory.py —— 教学示例：展示核心字段，非完整实现
+# memory/db.py —— 教学示例：展示核心字段，非完整实现
 from dataclasses import dataclass
 
 @dataclass
@@ -288,6 +288,7 @@ class Memory:
 **字段含义逐项讲解：**
 - `level`：记忆在 TMT 树中的层级，取 `"L1"`、`"L2"`、`"L5"`（L3/L4 与 L2 同构，本模块省略）。
 - `session_id`：L2 幂等的键——整合时按 `session_id + level` 查询是否已存在 L2，有则更新、无则新建。L5 的 `session_id=None` 表达“画像不属于任何会话”，幂等键只用 `level="L5"`。
+- **Memory 放 db.py**：`load_memories` 读库时要构造 `Memory(**doc)`——数据结构与存取同文件，即「memories 集合文档的 Python 形态」；若放在 memory.py，db.py 就得反向 import，循环回归。
 - `asdict()`：dataclass 自带的字典转换方法，`save_memory` 用它把对象转为 MongoDB document。
 
 **`@dataclass` 也是装饰器**：它和模块 2 的 `@retry` 是同一种机制——接收 `Memory` 类，返回自动生成 `__init__`/`__repr__` 的「增强版」类。
