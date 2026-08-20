@@ -47,12 +47,12 @@ llm_with_tools = llm.bind_tools(tools)   # bind 留在图内——工具绑定�
 ### 3. 04 文档改动
 
 - **第 2 步开头**（"## 第 2 步：实现 `memory/store.py`" 标题后、`### 2.1` 之前）插入一段无编号前置小节：说明 + `services/llm.py` 代码 + `build_graph()` 两行改动。教学点：「闭包在第二个消费者出现时提升为模块级」——`store.py` 既有端点调用方又有图节点调用方，且图 import store，LLM 放 graph 会循环导入。不改任何既有小节编号与交叉引用（"见 2.4"、"见 2.6"、"见 2.7" 等原样保留）。
-- `store.py` 教学示例的 import 行补 `from agentic_search.services.llm import call_llm`（第 2 步开头的包化 import 清单处）。
+- 前置小节末尾注明：`store.py` 文件头部需 `from agentic_search.services.llm import call_llm`（第 2 步开头面向调用方的包化 import 清单 `from agentic_search.memory.store import ...` 保持原样，那是消费方视角）。
 - FAQ 增补一条：「为什么 `call_llm` 不做重试？」——`@retry` 是模块 2 手写装饰器的教学点，包在图的 `llm_call` 上；记忆调用是后台/手动操作，失败由重按按钮或下一轮对话兜底，教学从简。
 
 ### 4. 02 文档：一行前向注记
 
-在 build_graph 代码块的 ② LLM 注释块之后（或该代码块逐段讲解处）加一行 blockquote，对齐 02:100 前向引用模块 4 的既有先例：
+在 02 §6 逐段讲解的「**为什么 `@retry` 包在 `llm_call` 而非 `init_chat_model` 上？**」段（02:441）之后，新增一条独立 blockquote，对齐 02:100 前向引用模块 4 的既有先例：
 
 > 模块 4 的记忆层也需要 LLM，届时会把这里的客户端提升为 `services/llm.py` 共享模块；本模块先保持闭包，聚焦图组装。
 
