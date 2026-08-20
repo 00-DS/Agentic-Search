@@ -145,7 +145,8 @@ backend/src/agentic_search/
 │   └── graph.py         # 本模块创建：ReAct agent 图
 ├── memory/
 │   ├── __init__.py
-│   └── store.py         # 模块 4 实现：L1/L2/L5 记忆
+│   ├── memory.py        # 模块 4 实现：L1/L2/L5 记忆加工（提取/整合/注入取数）
+│   └── store.py         # 模块 4 实现：记忆存储（MongoDB 读写）
 └── services/
     ├── __init__.py
     └── documents.py     # 模块 1 已实现：parse_pdf / list_docs
@@ -680,13 +681,14 @@ async def documents():
 async def consolidate(req: ConsolidateRequest):
     """手动触发 L2 会话记忆整合。
 
-    注意：L2 整合逻辑在模块 4 的 memory/store.py 中实现。
+    注意：L2 整合逻辑在模块 4 的 memory/memory.py（加工）与 memory/store.py（存储）中实现。
     本路由负责把 HTTP 请求转发到记忆层；此处为占位，
     模块 4 将补全真正的整合调用。
     """
-    # 模块 4 将在此处调用 memory.store 的整合函数
-    # from agentic_search.memory.store import consolidate_session
-    # return ConsolidateResponse(status="ok", l2_id=consolidate_session(req.session_id))
+    # 模块 4 将在此处调用记忆层的整合函数
+    # from agentic_search.memory.memory import consolidate_l2
+    # from agentic_search.memory.store import upsert_l2
+    # return ConsolidateResponse(status="ok", l2_id=...)
     return ConsolidateResponse(status="pending", l2_id="")
 ```
 

@@ -171,7 +171,7 @@ agentic-search/
 
 > PDF 经 pymupdf 提取的完整文本，以及 L1/L2/L5 记忆，全部存入 MongoDB（`agentic_search` 数据库，`localhost:27017`）。学生可用 **MongoDB Compass** 可视化查看数据库状态。安装 MongoDB Community Server 与 Compass 的步骤见[开始之前](./00-开始指南.md)。
 
-其余文件（`main.py`、`api/routes.py`、`agents/graph.py`、`memory/store.py`）分别由[模块 2](./02-LangGraph-Agent.md) 与[模块 4](./04-TMT记忆系统.md) 创建。本模块只搭建地基。
+其余文件（`main.py`、`api/routes.py`、`agents/graph.py`、`memory/memory.py` 与 `memory/store.py`）分别由[模块 2](./02-LangGraph-Agent.md) 与[模块 4](./04-TMT记忆系统.md) 创建。本模块只搭建地基。
 
 ---
 

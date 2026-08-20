@@ -106,14 +106,18 @@ oh-my-pi（omp）：它的记忆子系统验证了同样的结构在生产级 ag
 - **L1、L2、L5 的区别**：L1 是原子事实（如「用户在研究注意力机制」），L2 是会话级摘要（如「本次会话讨论了 Transformer 架构」），L5 是跨会话的稳定画像（如「用户是关注注意力机制的 NLP 研究者」）。
 - **整合的目的**：压缩信息量，保留要点，丢弃噪音。
 
-## 第 2 步：实现 `memory/store.py`
+## 第 2 步：实现记忆层 `memory/`——`memory.py`（加工）与 `store.py`（存储）
 
-在 `backend/src/agentic_search/memory/` 下创建 `store.py`，通过包化 import 暴露：
-`from agentic_search.memory.store import extract_l1, consolidate_l2, consolidate_profile, get_memories_for_context, save_memory, load_memories, upsert_l2, upsert_profile`。
+记忆层拆两个文件，各管一件事：**`memory/memory.py` = 记忆加工**（Memory 数据结构、LLM 提取与整合、上下文注入取数），**`memory/store.py` = 记忆存储**（MongoDB 读写与幂等写入）。通过包化 import 暴露：
+
+```python
+from agentic_search.memory.memory import Memory, extract_l1, consolidate_l2, consolidate_profile, get_memories_for_context
+from agentic_search.memory.store import save_memory, load_memories, upsert_l2, upsert_profile
+```
 
 ### 前置：LLM 客户端提升为共享模块 `services/llm.py`
 
-模块 2 的 LLM 客户端是 `build_graph()` 内部的局部变量（`llm_call` 节点以闭包捕获），模块 4 的记忆层也需要 LLM——`store.py` 的三个函数（`extract_l1`/`consolidate_l2`/`consolidate_profile`）都要裸调用 LLM（无工具绑定）。此时闭包遇到了第二个消费者：`store.py` 既被 `/api/consolidate` 端点调用、又被图内的 `store_memory` 节点调用（第 4 步），而图又 import `store.py`——若 `store.py` 反向从 `graph.py` 取 LLM 就成了循环导入。解法是把客户端提升为双方都能 import 的共享模块，与 `services/documents.py` 持有 Mongo 客户端同一模式：
+模块 2 的 LLM 客户端是 `build_graph()` 内部的局部变量（`llm_call` 节点以闭包捕获），模块 4 的记忆层也需要 LLM——`memory.py` 的三个函数（`extract_l1`/`consolidate_l2`/`consolidate_profile`）都要裸调用 LLM（无工具绑定）。此时闭包遇到了第二个消费者：`memory.py` 既被 `/api/consolidate` 端点调用、又被图内的 `store_memory` 节点调用（第 4 步），而图又 import `memory.py`——若 `memory.py` 反向从 `graph.py` 取 LLM 就成了循环导入。解法是把客户端提升为双方都能 import 的共享模块，与 `services/documents.py` 持有 Mongo 客户端同一模式：
 
 ```python
 # services/llm.py —— 模块级 LLM 客户端，graph 与 store 共用
@@ -146,15 +150,18 @@ def build_graph():
 
 `call_llm` 返回值恒为 `str`，消费方用 `json.loads(raw)` 解析（注意是 `loads`——带 s 的吃字符串；`json.load` 吃的是文件对象）。
 
-`store.py` 文件头部相应引入（本模块后文的 `call_llm(prompt)` / `json.loads` / `datetime.now(timezone.utc)` 均来自这里）：
+`memory.py` 文件头部相应引入（本模块后文的 `call_llm(prompt)` / `json.loads` / `datetime.now(timezone.utc)` 均来自这里；`store.py` 只管存储，不碰 LLM）：
 
 ```python
-# store.py 文件头部
+# memory/memory.py 文件头部
 import json
 from datetime import datetime, timezone
 
+from agentic_search.memory.store import load_memories
 from agentic_search.services.llm import call_llm
 ```
+
+依赖方向单一：`memory.py` → `store.py`（取数走存储函数）→ MongoDB；`api/routes.py` 两者都调；图节点只调 `memory.py`。
 
 各函数直接用 `datetime.now(timezone.utc).isoformat()` 生成时间戳。存字符串而非 datetime 对象：`Memory` 四字段全为 `str` 保持类型一致与 JSON 可序列化；BSON Date 读回是无时区的毫秒精度 datetime（时区信息丢失），ISO 字符串存什么读回什么；且 ISO 8601 字符串按字典序排列即按时间排列，`sort("timestamp", -1)` 正确取最近记忆。
 
@@ -262,12 +269,12 @@ PROMPTS: dict[str, str] = yaml.safe_load(
 )
 ```
 
-`pyyaml` 需声明为直接依赖（`uv add pyyaml`——它此前作为 uvicorn 的传递依赖已在锁文件里，此处转正）。`store.py` 文件头部相应加 `from agentic_search.configs.prompts import PROMPTS`。
+`pyyaml` 需声明为直接依赖（`uv add pyyaml`——它此前作为 uvicorn 的传递依赖已在锁文件里，此处转正）。`memory/memory.py` 文件头部相应加 `from agentic_search.configs.prompts import PROMPTS`（存储层 store.py 零 LLM 依赖，用不到它）。
 
 ### 2.1 数据结构：Memory dataclass
 
 ```python
-# 教学示例：展示核心字段，非完整实现
+# memory/memory.py —— 教学示例：展示核心字段，非完整实现
 from dataclasses import dataclass, asdict
 
 @dataclass
@@ -301,7 +308,7 @@ class Memory:
 - 输出：严格 JSON 数组（无 markdown、无解释），每条一个第三人称陈述句
 
 ```python
-# 教学示例：展示核心流程，非完整实现
+# memory/memory.py —— 教学示例：展示核心流程，非完整实现
 
 def extract_l1(history: dict, session_id: str, recent_l1: list[Memory] = []) -> list[Memory]:
     """从一轮对话提取原子事实，对比历史窗口去重。
@@ -338,7 +345,7 @@ def extract_l1(history: dict, session_id: str, recent_l1: list[Memory] = []) -> 
 将一次会话的所有 L1 整合为一条会话摘要。
 
 ```python
-# 教学示例：展示核心流程，非完整实现
+# memory/memory.py —— 教学示例：展示核心流程，非完整实现
 def consolidate_l2(l1_memories: list[Memory]) -> Memory:
     """将同会话的所有 L1 整合为一条 L2 会话摘要。
 
@@ -346,7 +353,7 @@ def consolidate_l2(l1_memories: list[Memory]) -> Memory:
     幂等由 store 层的 upsert_l2 保证（见 2.6）。
     """
     if not l1_memories:
-        raise ValueError("该会话没有 L1 记忆，先对话几轮再整合")
+        raise ValueError("暂无 L1 记忆")
     facts = "\n".join(f"- {m.content}" for m in l1_memories)
     prompt = PROMPTS["l2_consolidate"].format(facts=facts)
     summary = call_llm(prompt)           # 返回一段摘要文字
@@ -370,7 +377,7 @@ def consolidate_l2(l1_memories: list[Memory]) -> Memory:
 将跨会话的全部 L2 摘要整合为一条全局唯一的用户画像。与 `consolidate_l2` 同构——都是“下一级记忆 → 一条高层摘要”——区别在输入范围（跨会话）与幂等键（全局一条）。
 
 ```python
-# 教学示例：展示核心流程，非完整实现
+# memory/memory.py —— 教学示例：展示核心流程，非完整实现
 def consolidate_profile(l2_memories: list[Memory], previous_profile: Memory | None = None) -> Memory:
     """将全部 L2 会话摘要整合为一条 L5 用户画像。
 
@@ -379,7 +386,7 @@ def consolidate_profile(l2_memories: list[Memory], previous_profile: Memory | No
     历史保持连续性（TiMem 中 L5 参考最近 3 条历史 L5，`workflows/nodes/unified_processors.py:888`）。
     """
     if not l2_memories:
-        raise ValueError("还没有任何 L2 会话摘要，先整合至少一个会话")
+        raise ValueError("暂无 L2 记忆")
     summaries = "\n".join(f"- {m.content}" for m in l2_memories)
     previous_block = previous_profile.content if previous_profile else "（首次生成，尚无画像）"
     prompt = PROMPTS["l5_profile"].format(previous_block=previous_block, summaries=summaries)
@@ -394,11 +401,12 @@ def consolidate_profile(l2_memories: list[Memory], previous_profile: Memory | No
 
 **验证：** 构造 2 条 L2 摘要（不同会话、话题相关），先传 `previous_profile=None` 生成画像 v1；再构造 1 条含新信息的 L2，传 v1 调用，检查输出画像包含新信息且保留 v1 中仍然成立的内容。
 
-### 2.5 MongoDB 存取（PyMongo CRUD）
+### 2.5 记忆存储 `memory/store.py`（PyMongo CRUD）
 
-#### 2.5.1 连接初始化
+#### 2.5.1 连接初始化（store.py 文件头部）
 
 ```python
+# memory/store.py 文件头部 —— 存储层只管 MongoDB 读写，不碰 LLM
 from pymongo import MongoClient
 from agentic_search.configs.config import settings
 
@@ -408,11 +416,12 @@ _memories_collection = _db["memories"]   # 私有成员：仅 store.py 内部使
 ```
 
 **逐段讲解：**
-- **下划线私有**：`_memories_collection` 与 `services/documents.py` 的 `_documents_collection` 同一规范——集合句柄是 service 层的实现细节，API 层与 agent 工具层只调 service 函数，从不直接碰集合。
+- **下划线私有**：`_memories_collection` 与 `services/documents.py` 的 `_documents_collection` 同一规范——集合句柄是存储层（store.py）的实现细节，端点与图节点只调存储函数，从不直接碰集合。
 
 #### 2.5.2 写入单条：`save_memory(memory)`
 
 ```python
+# memory/store.py
 def save_memory(memory: Memory):
     _memories_collection.insert_one(asdict(memory))
 ```
@@ -420,6 +429,7 @@ def save_memory(memory: Memory):
 #### 2.5.3 条件查询：`load_memories(session_id, level)`
 
 ```python
+# memory/store.py
 def load_memories(session_id: str | None = None, level: str | None = None) -> list[Memory]:
     query = {}
     if session_id is not None:
@@ -437,6 +447,7 @@ def load_memories(session_id: str | None = None, level: str | None = None) -> li
 #### 2.5.4 更新单条：`update_one`（幂等更新）
 
 ```python
+# memory/store.py
 _memories_collection.update_one(
     {"session_id": session_id, "level": "L2"},
     {"$set": {"content": new_summary, "timestamp": datetime.now(timezone.utc).isoformat()}},
@@ -446,12 +457,12 @@ _memories_collection.update_one(
 
 该示例展示 `update_one` 原子操作本身；实际项目中的幂等更新由 `upsert_l2`/`upsert_profile` 封装（见 2.6）。
 
-### 2.6 幂等写入：`upsert_l2(l2)` 与 `upsert_profile(profile)`
+### 2.6 幂等写入：`upsert_l2(l2)` 与 `upsert_profile(profile)`（`memory/store.py`）
 
-端点需要的“有则更新、无则新建”逻辑封装在 service 层，返回落库文档的 `_id` 字符串：
+端点需要的“有则更新、无则新建”逻辑封装在存储层（store.py），返回落库文档的 `_id` 字符串：
 
 ```python
-# 教学示例：展示核心流程，非完整实现
+# memory/store.py —— 教学示例：展示核心流程，非完整实现
 def upsert_l2(l2: Memory) -> str:
     """按 (session_id, level="L2") 幂等写入 L2：已有则更新 content/timestamp，返回 _id。"""
     existing = _memories_collection.find_one(
@@ -479,16 +490,16 @@ def upsert_profile(profile: Memory) -> str:
 ```
 
 **逐段讲解：**
-- 与 `services/documents.py` 的分层一致：MongoDB 访问全部收在 service 层函数里，`api/routes.py` 只调用函数。
+- 与 `services/documents.py` 的分层一致：MongoDB 访问全部收在存储层（store.py）函数里，`api/routes.py` 只调用函数。
 - 两个函数只差幂等键（`session_id + level` vs 全局 `level`），对应 L2 每会话一条、L5 全局一条的定位。
-- §2 开头的 import 清单同步加 `upsert_l2, upsert_profile`。
+- 这两个函数属于第 2 步开头 import 清单的 store.py 一行（`save_memory, load_memories, upsert_l2, upsert_profile`）。
 
 ### 2.7 记忆注入：`get_memories_for_context(session_id)`
 
 分层注入的落地：全局画像 + 本会话最近 N 条，两类一起返回。
 
 ```python
-# 教学示例：展示核心逻辑，非完整实现
+# memory/memory.py —— 教学示例：展示核心逻辑，非完整实现
 def get_memories_for_context(session_id: str, limit: int = 20) -> list[Memory]:
     """取全局画像 + 该会话最近 N 条记忆（L1+L2），按时间倒序，配额注入，业界同构。
 
@@ -560,7 +571,7 @@ async def consolidate(req: ConsolidateRequest):
 **逐段讲解：**
 - **`level` 分流**：`"L5"` 走画像分支（输入是跨会话全部 L2 + 现有 L5，幂等键 `level="L5"` 全局一条）；
   其余走 L2 分支（输入是 `req.session_id` 的全部 L1，幂等键 `session_id + level`，每会话一条）。
-- **幂等由 service 层保证**：`upsert_l2`/`upsert_profile` 封装“查—增改”逻辑——端点只组数据、调函数、返结果，与模块 2 的分层铁律一致。
+- **幂等由存储层保证**：`upsert_l2`/`upsert_profile` 封装“查—增改”逻辑——端点只组数据、调函数、返结果，与模块 2 的分层铁律一致。
 - **`l2_id`/`profile_id` 返回 MongoDB `_id`**：文档主键全局唯一，比时间戳可靠（同一秒内两次整合会撞车）。
 - **空输入守卫**：两个分支各自在整合前检查输入为空 → 422，前端据此提示“先对话/先整合会话”。
 
@@ -608,7 +619,7 @@ def retrieve_memory(state):
     return {"messages": [memory_msg]}
 ```
 
-- **store_memory 节点**（循环结束后）：把本轮对话传给 `extract_l1(history, session_id, recent_l1)` 提取原子事实存入 MongoDB。**注意**：`recent_l1` 用 `load_memories(session_id, level="L1")` 取最近几条传入，让历史去重在每轮提取时生效。此节点只产生副作用（写库），返回 `{"messages": []}`。
+- **store_memory 节点**（循环结束后）：把本轮对话传给 `memory.py` 的 `extract_l1(history, session_id, recent_l1)` 提取原子事实，经 `save_memory` 存入 MongoDB。**注意**：`recent_l1` 用 `load_memories(session_id, level="L1")` 取最近几条传入，让历史去重在每轮提取时生效。此节点只产生副作用（写库），返回 `{"messages": []}`。
 
 模块 2 的 `MessagesState` 需扩展：`class MemoryState(MessagesState): session_id: str`。`api/schemas.py` 的 `QueryRequest` 加 `session_id: str = "default"`，`/api/query` 端点把 session_id 传进 graph 的初始 state。
 
@@ -699,7 +710,7 @@ cd backend && uv run pytest tests/test_memory.py -v
 
 ## 完成检查
 
-- [ ] `memory/store.py` 实现 `Memory`、`extract_l1`（官方移植 + recent_l1 去重）、`consolidate_l2`（守卫）、`consolidate_profile`、`save_memory/load_memories`、`upsert_l2`/`upsert_profile`、`get_memories_for_context`
+- [ ] `memory/memory.py` 实现 `Memory`、`extract_l1`（官方移植 + recent_l1 去重）、`consolidate_l2`（守卫）、`consolidate_profile`、`get_memories_for_context`；`memory/store.py` 实现 `save_memory`/`load_memories`/`upsert_l2`/`upsert_profile`
 - [ ] Agent 图扩展为含 `retrieve_memory` / `store_memory` 节点，同会话连续对话能引用历史记忆
 - [ ] `POST /api/consolidate`（`level` 区分 L2/L5）实现且幂等，空输入返回 422
 - [ ] 前端「新会话」「整合会话记忆」「整合画像」三按钮工作正常
