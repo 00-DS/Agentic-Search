@@ -146,7 +146,7 @@ def build_graph():
 
 `call_llm` 返回值恒为 `str`，消费方用 `json.loads(raw)` 解析（注意是 `loads`——带 s 的吃字符串；`json.load` 吃的是文件对象）。
 
-`store.py` 文件头部相应引入（本模块后文的 `call_llm(prompt)` / `json.loads` / `now_iso()` 均来自这里）：
+`store.py` 文件头部相应引入（本模块后文的 `call_llm(prompt)` / `json.loads` / `datetime.now(timezone.utc)` 均来自这里）：
 
 ```python
 # store.py 文件头部
@@ -154,16 +154,9 @@ import json
 from datetime import datetime, timezone
 
 from agentic_search.services.llm import call_llm
-
-
-def now_iso() -> str:
-    """当前 UTC 时间的 ISO 8601 字符串——Memory.timestamp 的取值。
-
-    统一用 UTC + 固定格式：ISO 8601 字符串按字典序排列即按时间排列，
-    get_memories_for_context 的 sort("timestamp", -1) 才能正确取最近记忆。
-    """
-    return datetime.now(timezone.utc).isoformat()
 ```
+
+各函数直接用 `datetime.now(timezone.utc).isoformat()` 生成时间戳（统一 UTC——ISO 8601 字符串按字典序排列即按时间排列，`sort("timestamp", -1)` 才能正确取最近记忆）。
 
 
 ### 2.1 数据结构：Memory dataclass
@@ -243,7 +236,7 @@ def extract_l1(history: dict, session_id: str, recent_l1: list[Memory] = []) -> 
     raw = call_llm(prompt)               # 调用 LLM，返回 JSON 字符串
     facts = json.loads(raw)              # 解析为字符串列表
     return [
-        Memory(level="L1", content=fact, timestamp=now_iso(), session_id=session_id)
+        Memory(level="L1", content=fact, timestamp=datetime.now(timezone.utc).isoformat(), session_id=session_id)
         for fact in facts
     ]
 ```
@@ -280,7 +273,7 @@ def consolidate_l2(l1_memories: list[Memory]) -> Memory:
     summary = call_llm(prompt)           # 返回一段摘要文字
     return Memory(
         level="L2", content=summary,
-        timestamp=now_iso(),
+        timestamp=datetime.now(timezone.utc).isoformat(),
         session_id=l1_memories[0].session_id,  # 继承会话 ID
     )
 ```
@@ -319,7 +312,7 @@ def consolidate_profile(l2_memories: list[Memory], previous_profile: Memory | No
 会话摘要：
 {summaries}"""
     profile = call_llm(prompt)
-    return Memory(level="L5", content=profile, timestamp=now_iso(), session_id=None)
+    return Memory(level="L5", content=profile, timestamp=datetime.now(timezone.utc).isoformat(), session_id=None)
 ```
 
 **逐段讲解：**
@@ -374,7 +367,7 @@ def load_memories(session_id: str | None = None, level: str | None = None) -> li
 ```python
 _memories_collection.update_one(
     {"session_id": session_id, "level": "L2"},
-    {"$set": {"content": new_summary, "timestamp": now_iso()}},
+    {"$set": {"content": new_summary, "timestamp": datetime.now(timezone.utc).isoformat()}},
     upsert=True,
 )
 ```
