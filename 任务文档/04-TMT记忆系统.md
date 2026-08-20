@@ -159,6 +159,67 @@ from agentic_search.services.llm import call_llm
 各函数直接用 `datetime.now(timezone.utc).isoformat()` 生成时间戳。存字符串而非 datetime 对象：`Memory` 四字段全为 `str` 保持类型一致与 JSON 可序列化；BSON Date 读回是无时区的毫秒精度 datetime（时区信息丢失），ISO 字符串存什么读回什么；且 ISO 8601 字符串按字典序排列即按时间排列，`sort("timestamp", -1)` 正确取最近记忆。
 
 
+### 前置：prompt 集中管理 `configs/prompts.yaml`
+
+本模块的全部 LLM 话术——agent 人设（persona）与三个记忆 prompt——集中放在一个 yaml 文件里，运行时加载注入，调话术零代码改动。TiMem 生产实现同样是 `config/prompts.yaml` 集中管理，教学版与生产同构。文件含四个键，占位符用 Python `str.format` 约定（`{recent_block}` 等，由调用方填充）：
+
+```yaml
+# configs/prompts.yaml —— 全部 LLM 话术集中于此
+persona: |
+  你是 Agentic Search，一个论文问答助手。用户会上传论文 PDF，你通过工具
+  （list_papers / read_paper / search_paper / extract_abstract）阅读和检索论文，
+  回答用户关于论文的问题。始终用中文回答；引用论文内容时注明出自哪篇文件。
+l1_extract: |
+  你是记忆提取器。从以下对话中提取值得长期记住的原子事实。
+
+  可提取范围（6 类）：
+
+  1. 用户身份与背景：身份、职业、研究方向
+  2. 用户偏好与倾向：喜欢、不喜欢、倾向
+  3. 用户关注的话题：论文、方法、工具、概念——允许从用户的问题推断
+  4. 用户决策与计划：决定用某方案、计划做某事
+  5. 用户提供的关键信息：环境、约束、事实陈述
+  6. 对话确认的领域知识：可复用的结论、概念
+
+  统一标准：可长期复用、对话有依据、原子化（一条事实一件事）。
+  忽略：寒暄、过程性内容、一次性临时信息。
+
+  已有记忆（若本轮事实与以下已有记忆重复，跳过，不要重复输出）：
+  {recent_block}
+
+  对话：User：{user}  Agent：{agent}
+  以 JSON 数组输出：["事实1", "事实2", ...]
+l2_consolidate: |
+  你是记忆整合器。将以下原子事实整合为一段会话摘要。
+  规则：合并重复、提取主题、保留关键细节，输出 100 字以内的摘要文字。
+  事实列表：
+  {facts}
+l5_profile: |
+  你是画像整合器。基于会话摘要更新用户画像。
+  画像维度：身份与背景、偏好与倾向、长期关注话题、关键决策、重要事实。
+  规则：合并新信息、修正已过时的描述、保留仍然成立的内容，输出 150 字以内的画像文字。
+  历史画像：
+  {previous_block}
+
+  会话摘要：
+  {summaries}
+```
+
+加载器与 `settings` 单例同一模式——模块级加载一次，全项目共享：
+
+```python
+# configs/prompts.py —— 模块级 PROMPTS 单例
+from pathlib import Path
+
+import yaml
+
+PROMPTS: dict[str, str] = yaml.safe_load(
+    Path(__file__).with_name("prompts.yaml").read_text(encoding="utf-8")
+)
+```
+
+`pyyaml` 需声明为直接依赖（`uv add pyyaml`——它此前作为 uvicorn 的传递依赖已在锁文件里，此处转正）。`store.py` 文件头部相应加 `from agentic_search.configs.prompts import PROMPTS`。
+
 ### 2.1 数据结构：Memory dataclass
 
 ```python
@@ -186,7 +247,7 @@ class Memory:
 
 从一轮对话中提取原子事实，并对比历史窗口 `recent_l1` 跳过重复事实。
 
-**Prompt 设计要点：**
+**Prompt 设计要点**（正文在 `configs/prompts.yaml` 的 `l1_extract` 键，见前置小节）：
 - 角色：记忆提取器，从对话中提取原子事实
 - 输入：一轮对话（user 与 agent 各一条消息）+ 已有记忆列表（recent_l1，用于去重）
 - **提取范围（6 类）**：
@@ -214,25 +275,7 @@ def extract_l1(history: dict, session_id: str, recent_l1: list[Memory] = []) -> 
 
     recent_block = "\n".join(f"- {m.content}" for m in recent_l1) or "（无）"
 
-    prompt = f"""你是记忆提取器。从以下对话中提取值得长期记住的原子事实。
-
-可提取范围（6 类）：
-
-1. 用户身份与背景：身份、职业、研究方向
-2. 用户偏好与倾向：喜欢、不喜欢、倾向
-3. 用户关注的话题：论文、方法、工具、概念——允许从用户的问题推断
-4. 用户决策与计划：决定用某方案、计划做某事
-5. 用户提供的关键信息：环境、约束、事实陈述
-6. 对话确认的领域知识：可复用的结论、概念
-
-统一标准：可长期复用、对话有依据、原子化（一条事实一件事）。
-忽略：寒暄、过程性内容、一次性临时信息。
-
-已有记忆（若本轮事实与以下已有记忆重复，跳过，不要重复输出）：
-{recent_block}
-
-对话：User：{history["user"]}  Agent：{history["agent"]}
-以 JSON 数组输出：["事实1", "事实2", ...]"""
+    prompt = PROMPTS["l1_extract"].format(recent_block=recent_block, **history)
     raw = call_llm(prompt)               # 调用 LLM，返回 JSON 字符串
     facts = json.loads(raw)              # 解析为字符串列表
     return [
@@ -266,10 +309,7 @@ def consolidate_l2(l1_memories: list[Memory]) -> Memory:
     if not l1_memories:
         raise ValueError("该会话没有 L1 记忆，先对话几轮再整合")
     facts = "\n".join(f"- {m.content}" for m in l1_memories)
-    prompt = f"""你是记忆整合器。将以下原子事实整合为一段会话摘要。
-规则：合并重复、提取主题、保留关键细节，输出 100 字以内的摘要文字。
-事实列表：
-{facts}"""
+    prompt = PROMPTS["l2_consolidate"].format(facts=facts)
     summary = call_llm(prompt)           # 返回一段摘要文字
     return Memory(
         level="L2", content=summary,
@@ -303,14 +343,7 @@ def consolidate_profile(l2_memories: list[Memory], previous_profile: Memory | No
         raise ValueError("还没有任何 L2 会话摘要，先整合至少一个会话")
     summaries = "\n".join(f"- {m.content}" for m in l2_memories)
     previous_block = previous_profile.content if previous_profile else "（首次生成，尚无画像）"
-    prompt = f"""你是画像整合器。基于会话摘要更新用户画像。
-画像维度：身份与背景、偏好与倾向、长期关注话题、关键决策、重要事实。
-规则：合并新信息、修正已过时的描述、保留仍然成立的内容，输出 150 字以内的画像文字。
-历史画像：
-{previous_block}
-
-会话摘要：
-{summaries}"""
+    prompt = PROMPTS["l5_profile"].format(previous_block=previous_block, summaries=summaries)
     profile = call_llm(prompt)
     return Memory(level="L5", content=profile, timestamp=datetime.now(timezone.utc).isoformat(), session_id=None)
 ```
@@ -498,6 +531,22 @@ async def consolidate(req: ConsolidateRequest):
 __start__ → retrieve_memory → [ llm_call ⇄ tool_node ] → store_memory → __end__
 ```
 
+本步同时给 agent 补上人设（persona）——模块 2 的 `llm_call` 直接 `invoke(state["messages"])`，回答语言与角色边界全靠模型默认。人设来自 `prompts.yaml` 的 `persona` 键，在 `llm_call` 每轮调用时前置为 SystemMessage：
+
+```python
+from langchain_core.messages import SystemMessage
+from agentic_search.configs.prompts import PROMPTS
+
+@retry(max_attempts=3)
+def llm_call(state):
+    messages = [SystemMessage(content=PROMPTS["persona"])] + state["messages"]
+    response = llm_with_tools.invoke(messages)
+    return {"messages": [response]}
+```
+
+人设存于调用而不入 state：它与 `retrieve_memory` 注入的记忆 SystemMessage 职责正交——人设是**恒定身份**（每轮相同，前置在消息序列最前），记忆是**动态背景**（随会话与画像变化，由节点注入）。消息序恒为 `[persona, 记忆, 对话...]`。`store_memory` 提取事实时取最后一对 user/agent 消息，人设消息互不干扰。
+
+
 - **retrieve_memory 节点**（循环开始前）：调用 `get_memories_for_context(state["session_id"])`，
   profile 与本会话记忆分两段格式化为 SystemMessage：
 
@@ -524,7 +573,8 @@ def retrieve_memory(state):
 
 模块 2 的 `MessagesState` 需扩展：`class MemoryState(MessagesState): session_id: str`。`api/schemas.py` 的 `QueryRequest` 加 `session_id: str = "default"`，`/api/query` 端点把 session_id 传进 graph 的初始 state。
 
-**验证：** 会话 A 连续两轮提问（第二轮应看到第一轮的 L1 注入）；点「新会话」后提问「我是做什么的」——若已点过「整合画像」，Agent 应能基于 profile 回答。
+**验证：** 会话 A 连续两轮提问（第二轮应看到第一轮的 L1 注入）；点「新会话」后提问「我是做什么的」——若已点过「整合画像」，Agent 应能基于 profile 回答。再问「你是谁」——Agent 应以论文问答助手身份用中文自我介绍（persona 生效）。
+
 
 ## 第 5 步：前端
 
@@ -596,6 +646,7 @@ async function consolidateProfile() {   // 「整合画像」（profile-btn，�
 - L2 幂等：同一会话二次 consolidate 更新而非新增
 - L5 幂等：二次 consolidate_profile 更新而非新增（全库仍只有一条 L5）
 - 端点空输入守卫（无 L1 的会话 / 无 L2 的库 → 422）
+- PROMPTS 四键就位（persona / l1_extract / l2_consolidate / l5_profile）+ 占位符与调用点参数集匹配（`.format()` 静态验证，零 LLM）
 
 L1 / L2 / L5 的 LLM 调用涉及真实模型，标记为集成测试（对齐 `test_graph.py` 打真 LLM 的做法）。
 
@@ -614,6 +665,7 @@ cd backend && uv run pytest tests/test_memory.py -v
 - [ ] `POST /api/consolidate`（`level` 区分 L2/L5）实现且幂等，空输入返回 422
 - [ ] 前端「新会话」「整合会话记忆」「整合画像」三按钮工作正常
 - [ ] `uv run pytest tests/test_memory.py -v` 全部通过
+- [ ] `configs/prompts.yaml` 四键就位，`PROMPTS` 单例可加载；问「你是谁」Agent 以论文问答助手身份中文自述（persona 生效）
 - [ ] 对话几轮 → 点「整合会话记忆」→ Compass 中 `memories` 出现该会话 L2；再点「整合画像」→ 出现全局唯一 L5（`session_id: null`）
 - [ ] 点「新会话」后问「我是做什么的」→ Agent 基于 profile 回答（跨会话记忆生效）
 - [ ] 同一事实重复表达多轮，L1 中重复明显减少（prompt 级软去重，非硬保证）
@@ -636,6 +688,9 @@ cd backend && uv run pytest tests/test_memory.py -v
 **将来记忆多了怎么办？** 两条路线，按产品形态选。**agent 路线（标杆做法，omp/hermes 同款）**：压缩与全文检索——hermes 用 SQLite FTS5 全文检索跨会话对话（`tools/session_search_tool.py`），omp 在上下文逼近上限时用 LLM 摘要压缩历史，全程零向量依赖。**记忆产品路线（可选）**：TiMeM 式双通道检索——语义向量（权重 0.9）+ BM25 关键词（0.1）；即便选这条路，omp 的 mnemopi 后端也只把向量存进自有 SQLite，而非引入独立向量数据库。无论哪条，`get_memories_for_context` 的函数名都是为切换预留的接口，图编排保持原样。
 
 **为什么 `call_llm` 不做重试？** 模块 2 手写的 `@retry` 装饰器包在图的 `llm_call` 上——那是 agent 回答用户的主链路，失败要兜底。记忆的提取与整合是后台/手动操作，失败时重按一次按钮或下一轮对话即可，教学从简。
+
+**为什么 prompt 放 yaml 而不是写在代码里？** 话术是调参对象——提取范围、画像维度、人设口吻都要反复试，放 yaml 改起来零代码改动、一目了然。TiMem 生产实现同样是 `config/prompts.yaml` 集中管理。注意占位符走 `str.format` 约定：prompt 里要出现字面 `{`/`}` 时双写成 `{{`/`}}`。
+
 
 
 ## 教学版与 TiMeM 实现的差异说明
