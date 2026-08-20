@@ -681,13 +681,13 @@ async def documents():
 async def consolidate(req: ConsolidateRequest):
     """手动触发 L2 会话记忆整合。
 
-    注意：L2 整合逻辑在模块 4 的 memory/memory.py（加工）与 memory/store.py（存储）中实现。
+    注意：L2 整合逻辑在模块 4 的 memory/memory.py（加工）与 memory/db.py（数据库操作）中实现。
     本路由负责把 HTTP 请求转发到记忆层；此处为占位，
     模块 4 将补全真正的整合调用。
     """
     # 模块 4 将在此处调用记忆层的整合函数
     # from agentic_search.memory.memory import consolidate_l2
-    # from agentic_search.memory.store import upsert_l2
+    # from agentic_search.memory.db import upsert_l2
     # return ConsolidateResponse(status="ok", l2_id=...)
     return ConsolidateResponse(status="pending", l2_id="")
 ```
