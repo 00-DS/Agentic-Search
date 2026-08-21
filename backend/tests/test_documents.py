@@ -1,16 +1,21 @@
-from agentic_search.services.documents import parse_pdf, store_doc, list_docs
 import pytest
+
+from agentic_search.services.documents import list_docs, parse_pdf
+
 
 def test_parse_pdf_return_string():
     from pathlib import Path
+
     pdf_path = r"D:\Python\Common\Agentic Search\任务文档\TiMem Temporal-Hierarchical Memory Consolidation for Long-Horizon Conversational Agents.pdf"
     result = parse_pdf(Path(pdf_path).read_bytes())
     assert isinstance(result, str)
     assert len(result) > 0
 
+
 def test_parse_pdf_empty_bytes_raises():
     """空字节流应被 pymupdf 拒绝。"""
     import pymupdf
+
     with pytest.raises(pymupdf.EmptyFileError):
         parse_pdf(b"")
 

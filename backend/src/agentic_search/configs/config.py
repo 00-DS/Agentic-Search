@@ -7,9 +7,9 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file = ".env",
-        env_file_encoding = "utf-8",
-        extra = "ignore",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
     )
 
     llm_model: str = "mimo-v2.5"
@@ -18,9 +18,9 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_timeout: int = 60
 
-
     mongo_url: str = "mongodb://localhost:27017"
     mongo_db: str = "agentic_search"
+
 
 settings = Settings()
 # 基类

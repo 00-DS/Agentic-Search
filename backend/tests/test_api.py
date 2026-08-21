@@ -1,6 +1,7 @@
 # tests/test_api.py —— 教学示例
-from agentic_search.main import app
 from fastapi.testclient import TestClient
+
+from agentic_search.main import app
 
 client = TestClient(app)
 
