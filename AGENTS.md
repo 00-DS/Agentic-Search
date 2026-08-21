@@ -2,7 +2,7 @@
 
 教学项目 **Agentic Search** —— 论文问答助手：原生 HTML/JS 前端 + FastAPI 后端（LangGraph ReAct agent + LangChain tool calling）+ pymupdf PDF 解析 + MongoDB + TMT 记忆。
 
-> 这是个**教学项目**：`任务文档/` 下的中文文档（00→01→02→03→04）是设计意图的源头。改代码前，先确认它和对应模块文档是否一致——文档与代码有意保持同步。**四个模块（文档工具 / LangGraph Agent / HTML 前端 / TMT 记忆）代码均已落地**（`tests/test_memory.py` 属 04 第 6 步待写）。模块 4 定义**三层 TMT 记忆**（L1 事实 / L2 会话摘要 / L5 用户画像，L3/L4 因与 L2 同构被省略）：注入策略是配额制（L5 全局一条 + 本会话 L1/L2 ≤20 条），叙事以 oh-my-pi（omp）为标杆、TiMeM 论文为参考，**零向量依赖**（无 embedding/向量库）。
+> 这是个**教学项目**：`任务文档/` 下的中文文档（00→01→02→03→04）是设计意图的源头。改代码前，先确认它和对应模块文档是否一致——文档与代码有意保持同步。**四个模块（文档工具 / LangGraph Agent / HTML 前端 / TMT 记忆）代码均已落地**。模块 4 定义**三层 TMT 记忆**（L1 事实 / L2 会话摘要 / L5 用户画像，L3/L4 因与 L2 同构被省略）：注入策略是配额制（L5 全局一条 + 本会话 L1/L2 ≤20 条），叙事以 oh-my-pi（omp）为标杆、TiMeM 论文为参考，**零向量依赖**（无 embedding/向量库）。
 
 ## 架构与数据流
 
@@ -36,7 +36,7 @@ backend/           uv 项目（src layout），全部后端代码
     services/      documents.py(parse_pdf + Mongo CRUD) · llm.py(共享 LLM 单例)
     configs/       config.py(pydantic-settings 单例) · prompts.py+prompts.yaml(PROMPTS 单例)
     memory/        db.py(Memory+存取+阈值) · memory.py(三加工函数，纯进出)
-  tests/           3 个测试文件（test_memory.py 待写，04 第 6 步）
+  tests/           4 个测试文件（含模块 4 的 test_memory.py）
 docs/superpowers/  specs/ + plans/ —— 设计重构记录
 .superpowers/sdd/  subagent-driven development 产物
 frontend/          index.html + app.js（原生 HTML/JS，零构建）
@@ -127,12 +127,12 @@ with httpx.stream("POST", "http://localhost:8000/api/query", json={"question":"�
 ## 测试与 QA
 
 - **框架**：pytest（`>=9.1.1`，与 ruff 一起在主依赖里，无 dev 组）。
-- **位置**：`backend/tests/`（注意是 `tests/` 不是 `test/`），3 个文件 8 个测试，全同步。
-- **隔离性差**（改测试要知道）：`test_api.py` 用 `TestClient` 但连**真 MongoDB**；`test_graph.py` 打**真 LLM**（需 `LLM_API_KEY`）；`test_documents.py` 连真 Mongo + 读一个**硬编码绝对路径**的本地 PDF（`D:\...\任务文档\TiMem...pdf`）。**这些测试不能在干净 CI 跑通**，依赖外部服务与本机文件。
+- **位置**：`backend/tests/`（注意是 `tests/` 不是 `test/`），4 个文件 16 个测试，全同步。
+- **隔离性差**（改测试要知道）：`test_api.py` 用 `TestClient` 但连**真 MongoDB**；`test_graph.py` 打**真 LLM**（需 `LLM_API_KEY`）；`test_documents.py` 连真 Mongo + 读一个**硬编码绝对路径**的本地 PDF（`D:\...\任务文档\TiMem...pdf`）；`test_memory.py` 连真 Mongo（唯一 session_id 隔离 + L5 备份恢复，零 LLM）。**这些测试不能在干净 CI 跑通**，依赖外部服务与本机文件。
 - **无 fixtures、无 conftest.py、无 mock。**
 - **无 pytest 配置**（无 `[tool.pytest.ini_options]`），默认自动发现。
 - **lint**：仅 ruff（默认规则，无 `ruff.toml`/`[tool.ruff]`）。**无 mypy、无 pyright、无 pre-commit**（`src/` 下有 `py.typed` 但无工具消费）。
-- **未覆盖**：`schemas.py`、`tools.py`、`config.py`、`main.py`(CORS/include_router) 及模块 4 记忆层（`test_memory.py` 属 04 第 6 步待写）。
+- **未覆盖**：`schemas.py`、`tools.py`、`config.py`、`main.py`(CORS/include_router) 及记忆层 LLM 加工函数（`extract_l1`/`consolidate_l2`/`consolidate_profile`，归手动场景验证）。
 
 ## 关键依赖
 

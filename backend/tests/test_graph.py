@@ -9,6 +9,7 @@ def test_graph_returns_answer():
     result = graph.invoke(
         {
             "messages": [HumanMessage(content="TiMem的核心方法是什么？")],
+            "session_id": "test-graph",
         }
     )
 
