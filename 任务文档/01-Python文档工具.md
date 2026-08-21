@@ -451,7 +451,7 @@ print(f'前 200 字符: {text[:200]}')
 MongoDB 的连接通过 PyMongo 的 `MongoClient` 建立。以下是**教学示例，展示核心逻辑，非完整实现**：
 
 ```python
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pymongo import MongoClient
 
 from agentic_search.configs.config import settings
@@ -470,7 +470,7 @@ def store_doc(doc_id: str, filename: str, text: str) -> None:
             "doc_id": doc_id,                       # 文档唯一标识（上传时生成）
             "filename": filename,                   # 原始 PDF 文件名
             "text": text,                           # 完整纯文本
-            "uploaded_at": datetime.now(timezone.utc),  # 上传时间
+            "uploaded_at": datetime.now(UTC),  # 上传时间
         }
     )
 ```
@@ -479,7 +479,7 @@ def store_doc(doc_id: str, filename: str, text: str) -> None:
 
 - **模块级连接**：`MongoClient(settings.mongo_url)` 在模块被 import 时建立一次连接。PyMongo 的客户端内置连接池，多个 `insert_one` / `find_one` 复用同一连接，无需手动管理。
 - **`insert_one`**：向集合插入一条记录。若 `documents` 集合尚不存在，MongoDB 会在首次写入时自动创建——无需提前建表。
-- **`uploaded_at`**：记录上传时间。`datetime.now(timezone.utc)` 用带时区的 UTC 时间，避免不同服务器时区不一致导致的排序错误。
+- **`uploaded_at`**：记录上传时间。`datetime.now(UTC)` 用带时区的 UTC 时间，避免不同服务器时区不一致导致的排序错误。
 - **schema：`{doc_id, filename, text, uploaded_at}`**：扁平文档，`text` 是完整纯文本。agent 经 `read_paper(doc_id, start_line, end_line)` 按行号取片段，或经 `search_paper(pattern, doc_id)` 正则定位。
 
 **验证**：先用 `parse_pdf` 提取一个 PDF 的文本，再调用 `store_doc` 存入，然后打开 **MongoDB Compass** 查看 `agentic_search` 的 `documents` 集合——应能看到一条新记录，其 `text` 字段是完整纯文本。
@@ -832,6 +832,7 @@ uv run pytest tests/test_documents.py -v
 
 预期输出示例：
 
+```
 tests/test_documents.py::test_parse_pdf_returns_text PASSED
 tests/test_documents.py::test_parse_pdf_file_not_found PASSED
 tests/test_documents.py::test_store_doc PASSED

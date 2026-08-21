@@ -151,12 +151,12 @@ def build_graph():
 
 `call_llm` 返回值恒为 `str`，消费方用 `json.loads(raw)` 解析（注意是 `loads`——带 s 的吃字符串；`json.load` 吃的是文件对象）。
 
-`memory.py` 文件头部相应引入（本模块后文的 `call_llm(prompt)` / `json.loads` / `datetime.now(timezone.utc)` 均来自这里；`db.py` 只管数据库，不碰 LLM）：
+`memory.py` 文件头部相应引入（本模块后文的 `call_llm(prompt)` / `json.loads` / `datetime.now(UTC)` 均来自这里；`db.py` 只管数据库，不碰 LLM）：
 
 ```python
 # memory/memory.py 文件头部
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from agentic_search.memory.db import Memory
 from agentic_search.services.llm import call_llm
@@ -164,7 +164,7 @@ from agentic_search.services.llm import call_llm
 
 依赖方向单一：`memory.py` → `db.py`（只用 Memory 数据结构）→ MongoDB；`api/routes.py` 与图节点按需两者都调——加工找 `memory.py`，存取找 `db.py`。
 
-各函数直接用 `datetime.now(timezone.utc).isoformat()` 生成时间戳。存字符串而非 datetime 对象：`Memory` 四字段全为 `str` 保持类型一致与 JSON 可序列化；BSON Date 读回是无时区的毫秒精度 datetime（时区信息丢失），ISO 字符串存什么读回什么；且 ISO 8601 字符串按字典序排列即按时间排列，`sort("timestamp", -1)` 正确取最近记忆。
+各函数直接用 `datetime.now(UTC).isoformat()` 生成时间戳。存字符串而非 datetime 对象：`Memory` 四字段全为 `str` 保持类型一致与 JSON 可序列化；BSON Date 读回是无时区的毫秒精度 datetime（时区信息丢失），ISO 字符串存什么读回什么；且 ISO 8601 字符串按字典序排列即按时间排列，`sort("timestamp", -1)` 正确取最近记忆。
 
 
 ### 前置：prompt 集中管理 `configs/prompts.yaml`
@@ -312,14 +312,16 @@ class Memory:
 ```python
 # memory/memory.py —— 教学示例：展示核心流程，非完整实现
 
-def extract_l1(history: dict, session_id: str, recent_l1: list[Memory] = []) -> list[Memory]:
+def extract_l1(history: dict, session_id: str, recent_l1: list[Memory] | None = None) -> list[Memory]:
     """从一轮对话提取原子事实，对比历史窗口去重。
 
     history: {"user": "...", "agent": "..."}
-    recent_l1: 该会话最近 N 条 L1 记忆（历史窗口），用于跳过重复事实
+    recent_l1: 该会话最近 N 条 L1 记忆（历史窗口），用于跳过重复事实；缺省 `None` 表示无历史记忆
     """
 
     # 历史窗口：拼进 prompt，让 LLM 判断重复（提取时去重，而非存完再清理）
+    if recent_l1 is None:      # 可变默认值陷阱：默认 [] 在所有调用间共享同一个列表对象
+        recent_l1 = []
 
     recent_block = "\n".join(f"- {m.content}" for m in recent_l1) or "（无）"
 
@@ -327,13 +329,14 @@ def extract_l1(history: dict, session_id: str, recent_l1: list[Memory] = []) -> 
     raw = call_llm(prompt)               # 调用 LLM，返回 JSON 字符串
     facts = json.loads(raw)              # 解析为字符串列表
     return [
-        Memory(level="L1", content=fact, timestamp=datetime.now(timezone.utc).isoformat(), session_id=session_id)
+        Memory(level="L1", content=fact, timestamp=datetime.now(UTC).isoformat(), session_id=session_id)
         for fact in facts
     ]
 ```
 
 **逐段讲解：**
 - **`recent_l1` 历史窗口**：把该会话最近的 L1 记忆拼进 prompt（`recent_block`），让 LLM **对比后跳过重复**——对应论文 3.2 的 Historical Memories（同层滑动窗口）。用户重复表达同一事实时，只有第一遍被存下来，重复数据也不会占据注入上下文的名额。去重依赖 LLM 遵守指令，属于软约束——TiMem 生产实现同样只靠 prompt 指令去重。
+- **默认值是 `None` 而非 `[]`**：Python 的默认参数在函数定义时求值一次，所有调用共享同一个列表对象——本例只读不写暂无实害，但只要哪天在函数体内 `append`，污染就会跨调用累积。惯用法是 `None` 哨兵加函数体内初始化，ruff 的 B006 规则拦的正是这个陷阱。
 - **保留实质信息、剔除功能词**（TiMeM 官方 L1 的核心原则）：第一人称转第三人称，方法名、数字、相对时间原样保留——一轮「这论文怎么分类的？」能提取出「用户关注 KSSE 谱嵌入」「KSSE 用 QC-LDPC 稀疏图做谱嵌入」。这与官方生产实现同源：官方 L1 同样按「实质信息全保留、功能词全剔除」运转，无自造的分类体系。
 - **容错提示**：生产建议用 LangChain 的 `with_structured_output` + Pydantic schema 替代裸 `json.loads`，教学示例保留最简形式。
 - **segment 单位**：本模块以一轮对话（user 与 agent 各一条）为一个 L1 提取单位；TiMem 是固定 2 轮对话对（`fragment_size: 2`）。每轮提取粒度更细、事实更原子化，代价是 LLM 调用次数翻倍——教学场景优先可读性。
@@ -361,7 +364,7 @@ def consolidate_l2(l1_memories: list[Memory]) -> Memory:
     summary = call_llm(prompt)           # 返回一段摘要文字
     return Memory(
         level="L2", content=summary,
-        timestamp=datetime.now(timezone.utc).isoformat(),
+        timestamp=datetime.now(UTC).isoformat(),
         session_id=l1_memories[0].session_id,  # 继承会话 ID
     )
 ```
@@ -393,7 +396,7 @@ def consolidate_profile(l2_memories: list[Memory], previous_profile: Memory | No
     previous_block = previous_profile.content if previous_profile else "（首次生成，尚无画像）"
     prompt = PROMPTS["l5_profile"].format(previous_block=previous_block, summaries=summaries)
     profile = call_llm(prompt)
-    return Memory(level="L5", content=profile, timestamp=datetime.now(timezone.utc).isoformat(), session_id=None)
+    return Memory(level="L5", content=profile, timestamp=datetime.now(UTC).isoformat(), session_id=None)
 ```
 
 **逐段讲解：**
@@ -460,7 +463,7 @@ def load_memories(session_id: str | None = None, level: str | None = None,
 # memory/db.py
 _memories_collection.update_one(
     {"session_id": session_id, "level": "L2"},
-    {"$set": {"content": new_summary, "timestamp": datetime.now(timezone.utc).isoformat()}},
+    {"$set": {"content": new_summary, "timestamp": datetime.now(UTC).isoformat()}},
     upsert=True,
 )
 ```
@@ -633,7 +636,10 @@ def retrieve_memory(state):
 def store_memory(state):
     """提取 L1 落库 + L2 自动触发（新增 L1 达阈值则重整合）。"""
     session_id = state["session_id"]
-    history = {"user": ..., "agent": ...}                          # 取最后一对 user/agent 消息
+    history = {  # 取最后一对 user/agent 消息（人设与记忆 SystemMessage 不参与提取）
+        "user": next(m.content for m in reversed(state["messages"]) if m.type == "human"),
+        "agent": next(m.content for m in reversed(state["messages"]) if m.type == "ai"),
+    }
     recent_l1 = load_memories(session_id, level="L1", limit=10)    # 历史去重窗口
     for m in extract_l1(history, session_id, recent_l1):
         save_memory(m)
