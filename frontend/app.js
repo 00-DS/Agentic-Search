@@ -8,14 +8,12 @@ const API = "http://localhost:8000";   // 后端地址，集中定义
 const fileInput   = document.getElementById("file-input");
 const uploadBtn   = document.getElementById("upload-btn");
 const consolidateBtn = document.getElementById("consolidate-btn");
+const newSessionBtn = document.getElementById("new-session-btn");
+const profileBtn    = document.getElementById("profile-btn");
 const messagesEl = document.getElementById('messages')
 const queryForm   = document.getElementById("query-form");
 const questionInput  = document.getElementById("question");
 const documentsEl = document.getElementById("documents");
-
-
-const currentSessionId = "demo-session"; // 会话 ID，模块 4 替换为真实会话管理
-
 const base_url = 'http://localhost:8000'
 
 // 追加消息列表
@@ -77,7 +75,7 @@ async function askQuestion() {
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, session_id: currentSessionId }),
     },
     (eventType, dataLine) => {
       if (eventType === "tool") {
@@ -111,20 +109,26 @@ async function uploadFile() {
 }
 
 // 触发记忆整合
-async function consolidateMemory() {
-  const res = await fetch(`${base_url}/api/consolidate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: currentSessionId }),
+async function consolidateMemory() {   // 「整合会话记忆」（consolidate-btn，模块 3 已有）
+  const res = await fetch('http://localhost:8000/api/consolidate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: currentSessionId })   // level 缺省即 "L2"，模块 3 的请求体原样兼容
   });
-  const data = await res.json();   // 后端返回 {status, l2_id}
-  if (data.status === "ok") {            // 模块 4 接入真实整合后走这条
-    alert("L2 记忆整合完成");
-  } else if (data.status === "pending") { // 模块 2 阶段：后端占位返回 pending
-    alert("已发送整合请求，L2 整合逻辑将在模块 4 接入后生效");
-  } else {
-    alert("整合失败：" + JSON.stringify(data));
-  }
+  if (res.status === 422) { alert('该会话还没有可整合的记忆，先对话几轮'); return; }
+  const { l2_id } = await res.json();
+  alert(`L2 整合完成（${l2_id}）`);
+}
+
+async function consolidateProfile() {   // 「整合画像」（profile-btn，本模块新增）
+  const res = await fetch('http://localhost:8000/api/consolidate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: currentSessionId, level: "L5" })
+  });
+  if (res.status === 422) { alert('还没有会话摘要，先整合至少一个会话'); return; }
+  const { profile_id } = await res.json();
+  alert(`画像更新完成（${profile_id}）`);
 }
 
 // 渲染文档列表
@@ -147,9 +151,20 @@ async function getDocuments(){
 }
 
 
+let currentSessionId = localStorage.getItem("session_id") || crypto.randomUUID();
+localStorage.setItem("session_id", currentSessionId);
+
+function newSession() {
+  currentSessionId = crypto.randomUUID();
+  localStorage.setItem("session_id", currentSessionId);
+  messagesEl.innerHTML = "";   // 清空聊天区（messagesEl 是模块 3 已取的元素引用）
+}
+
 // 绑定事件
 uploadBtn.addEventListener("click", uploadFile); //上传文件
 consolidateBtn.addEventListener("click", consolidateMemory);//记忆整合
+newSessionBtn.addEventListener("click", newSession);//新会话
+profileBtn.addEventListener("click", consolidateProfile);//画像整合
 queryForm.addEventListener("submit", (e) => {//发送问题（表单提交事件）
   e.preventDefault();        // 阻止表单默认提交（刷新页面）
   askQuestion();
