@@ -670,7 +670,38 @@ def store_memory(state):
 
 **触发时机与加工能力的分工**：何时整合（阈值判定、timestamp 对比）是编排策略，写在图节点；怎么整合（`consolidate_l2`）与怎么落库（`upsert_l2`）是记忆层能力。手动按钮走端点调同一套能力（第 3 步），两处触发点对称——按钮是不必等攒满的即时兜底。
 
-模块 2 的 `MessagesState` 需扩展：`class MemoryState(MessagesState): session_id: str`。`api/schemas.py` 的 `QueryRequest` 加 `session_id: str = "default"`，`/api/query` 端点把 session_id 传进 graph 的初始 state。
+最后是把节点装回图里。`MessagesState` 需扩展一个会话通道——`retrieve_memory` 与 `store_memory` 都要从 state 读 `session_id`：
+
+```python
+class MemoryState(MessagesState):
+    session_id: str
+```
+
+模块 2 的 `should_continue` 在无工具调用时返回 `END`，本模块改为路由到 `"store_memory"`——循环结束后先进记忆提取节点，再由它通向 `END`；直接回 `END` 的话 `store_memory` 永远不会执行，L1 也就永不落库：
+
+```python
+def should_continue(state):
+    last = state["messages"][-1]
+    return "tool_node" if getattr(last, "tool_calls", None) else "store_memory"
+```
+
+装配代码（对照模块 2 的 `build_graph`：图改用 `MemoryState`，新增两个节点注册，入口边从 `START → llm_call` 改为先过记忆注入，收尾边改由 `store_memory` 通向 `END`）：
+
+```python
+builder = StateGraph(MemoryState)
+builder.add_node("llm_call", llm_call)
+builder.add_node("tool_node", ToolNode(tools))
+builder.add_node("retrieve_memory", retrieve_memory)
+builder.add_node("store_memory", store_memory)
+builder.add_edge(START, "retrieve_memory")     # 进循环前注入记忆背景
+builder.add_edge("retrieve_memory", "llm_call")
+builder.add_conditional_edges("llm_call", should_continue, ["tool_node", "store_memory"])
+builder.add_edge("tool_node", "llm_call")      # 工具结果喂回 LLM，循环继续
+builder.add_edge("store_memory", END)          # 记忆落库后收尾
+return builder.compile()
+```
+
+两个易错点：①`add_conditional_edges` 的路由表必须列出 `should_continue` 的全部返回值——条件函数返回了路由表里没有的目标（如 `END`）会在运行时报 `KeyError`；②`session_id` 是三处契约：`api/schemas.py` 的 `QueryRequest` 加 `session_id: str = "default"`、`/api/query` 端点把它传进 `graph.astream` 的初始 state、`MemoryState` 声明通道——缺任何一处，节点读 `state["session_id"]` 时直接 `KeyError`。
 
 **验证：** 会话 A 连续两轮提问（第二轮应看到第一轮的 L1 注入）；点「新会话」后提问「我是做什么的」——若已点过「整合画像」，Agent 应能基于 profile 回答。再问「你是谁」——Agent 应以论文问答助手身份用中文自我介绍（persona 生效）。同一会话累计新增 ≥10 条 L1 后不点按钮，Compass 中该会话 L2 自动出现/刷新（自动触发生效）。
 
