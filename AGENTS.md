@@ -1,5 +1,7 @@
 # Repository Guidelines
 
+教学项目 **Agentic Search** —— 论文问答助手：原生 HTML/JS 前端 + FastAPI 后端（LangGraph ReAct agent + LangChain tool calling）+ pymupdf PDF 解析 + MongoDB + TMT 记忆。
+
 > 这是个**教学项目**：`任务文档/` 下的中文文档（00→01→02→03→04）是设计意图的源头。改代码前，先确认它和对应模块文档是否一致——文档与代码有意保持同步。**四个模块（文档工具 / LangGraph Agent / HTML 前端 / TMT 记忆）代码均已落地**（`tests/test_memory.py` 属 04 第 6 步待写）。模块 4 定义**三层 TMT 记忆**（L1 事实 / L2 会话摘要 / L5 用户画像，L3/L4 因与 L2 同构被省略）：注入策略是配额制（L5 全局一条 + 本会话 L1/L2 ≤20 条），叙事以 oh-my-pi（omp）为标杆、TiMeM 论文为参考，**零向量依赖**（无 embedding/向量库）。
 
 ## 架构与数据流
@@ -34,7 +36,7 @@ backend/           uv 项目（src layout），全部后端代码
     services/      documents.py(parse_pdf + Mongo CRUD) · llm.py(共享 LLM 单例)
     configs/       config.py(pydantic-settings 单例) · prompts.py+prompts.yaml(PROMPTS 单例)
     memory/        db.py(Memory+存取+阈值) · memory.py(三加工函数，纯进出)
-  tests/           4 个测试文件（test_memory.py 待写，04 第 6 步）
+  tests/           3 个测试文件（test_memory.py 待写，04 第 6 步）
 docs/superpowers/  specs/ + plans/ —— 设计重构记录
 .superpowers/sdd/  subagent-driven development 产物
 frontend/          index.html + app.js（原生 HTML/JS，零构建）
