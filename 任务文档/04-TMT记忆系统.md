@@ -102,6 +102,21 @@ oh-my-pi（omp）：它的记忆子系统验证了同样的结构在生产级 ag
 
 > 💡 **幂等性**：同一会话最多一条 L2（按 `session_id` 定位，有则更新）；全局最多一条 L5（按 `level` 定位，有则更新）。重复点击按钮只会增量更新。
 
+## 对前面模块的波及总览
+
+模块 4 不止新增 `memory/`——它还反向改动模块 2、3 的既有文件。动手前先看爆炸半径：
+
+| 前面模块的文件 | 波及改动 | 详见 |
+|---|---|---|
+| `services/llm.py`（新增） | LLM 客户端从 `build_graph` 提出共享单例（`llm` + `call_llm`） | 第 2 步前置 |
+| `configs/prompts.yaml` + `prompts.py`（新增） | prompt 集中管理；`pyyaml` 转直接依赖 | 第 2 步前置 |
+| `api/schemas.py` | `QueryRequest` 加 `session_id`；新增 `ConsolidateRequest/Response` | 第 3 步 / 第 4 步 |
+| `api/routes.py` | `/api/consolidate` 占位转正（level 分流）；`/api/query` 传 session_id | 第 3 步 / 第 4 步 |
+| `agents/graph.py` | `MemoryState` + `retrieve_memory`/`store_memory` 节点 + persona 前置 | 第 4 步 |
+| `frontend/app.js` + `index.html` | 真会话 ID（localStorage）、请求体带 session_id、新增两按钮及绑定 | 第 5 步 |
+
+模块 1（`services/documents.py`）零波及。
+
 ## 第 1 步：理解 TMT 思想
 
 - **L1、L2、L5 的区别**：L1 是原子事实（如「用户在研究注意力机制」），L2 是会话级摘要（如「本次会话讨论了 Transformer 架构」），L5 是跨会话的稳定画像（如「用户是关注注意力机制的 NLP 研究者」）。
