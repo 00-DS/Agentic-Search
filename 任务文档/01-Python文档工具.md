@@ -302,14 +302,14 @@ uv run python -c "import pymupdf; from pydantic_settings import BaseSettings; im
 LLM_MODEL=deepseek-v4-flash
 
 # MongoDB 配置（数据存储地址，参见开始指南中的安装步骤）
-MONGO_URI=mongodb://localhost:27017
+MONGO_URL=mongodb://localhost:27017
 MONGO_DB=agentic_search
 ```
 
 逐项讲解：
 
 - `LLM_MODEL`：LLM 模型名，Agent 用它决定调用哪个模型。换模型只改这里。
-- `MONGO_URI` / `MONGO_DB`：MongoDB 连接地址与数据库名。本模块文档服务把 pymupdf 提取的完整文本存入该库的 `documents` 集合，[模块 4](./04-TMT记忆系统.md) 的记忆系统则使用 `memories` 集合。集中配置便于将来把数据库迁移到远程服务器——只需改这一处。
+- `MONGO_URL` / `MONGO_DB`：MongoDB 连接地址与数据库名。本模块文档服务把 pymupdf 提取的完整文本存入该库的 `documents` 集合，[模块 4](./04-TMT记忆系统.md) 的记忆系统则使用 `memories` 集合。集中配置便于将来把数据库迁移到远程服务器——只需改这一处。
 
 > 在实际开发中，请将 `.env.example` 复制为 `.env`：`cp .env.example .env`。并将 `.env` 加入 `.gitignore`。
 
@@ -876,7 +876,7 @@ file_path = Path("论文.pdf")               # parse_pdf 接收文件路径，�
 
 ### Q：连接 MongoDB 报错 `ServerSelectionTimeoutError`
 
-**A**：这是 PyMongo 连不上数据库。确认三点：第一，MongoDB 服务已启动——在命令行执行 `mongod --version` 能输出版本，且系统服务列表中有 MongoDB；第二，`.env` 中 `MONGO_URI=mongodb://localhost:27017` 与实际监听地址一致；第三，防火墙未拦截 27017 端口。可用 MongoDB Compass 尝试连接 `mongodb://localhost:27017`，若 Compass 也连不上，说明是 MongoDB 服务本身未运行，回到[开始之前](./00-开始指南.md)按步骤启动。
+**A**：这是 PyMongo 连不上数据库。确认三点：第一，MongoDB 服务已启动——在命令行执行 `mongod --version` 能输出版本，且系统服务列表中有 MongoDB；第二，`.env` 中 `MONGO_URL=mongodb://localhost:27017` 与实际监听地址一致；第三，防火墙未拦截 27017 端口。可用 MongoDB Compass 尝试连接 `mongodb://localhost:27017`，若 Compass 也连不上，说明是 MongoDB 服务本身未运行，回到[开始之前](./00-开始指南.md)按步骤启动。
 
 ---
 
